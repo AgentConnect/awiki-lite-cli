@@ -1,0 +1,75 @@
+{
+  "profile": "anp.attachment.v1",
+  "security_profile": "transport-protected",
+  "create_slot": {
+    "method": "attachment.create_slot",
+    "target": {"kind": "service", "did": "did:wba:message.example.test"},
+    "body": {
+      "attachment_id": "att-fixture",
+      "expected_size": "12",
+      "expected_digest": {"alg": "sha-256", "value_b64u": "fixture-digest"},
+      "mime_type": "application/pdf",
+      "filename": "fixture.pdf",
+      "intended_message_security_profile": "transport-protected",
+      "intended_target": {"kind": "agent", "did": "did:wba:example.test:user:bob:e1_fixture"},
+      "object_encryption_mode": "none"
+    }
+  },
+  "create_slot_result": {
+    "attachment_id": "att-fixture",
+    "slot_id": "slot-fixture",
+    "upload_uri": "https://objects.example.test/objects/upload/slot-fixture",
+    "upload_headers": "<redacted>",
+    "object_uri": "https://objects.example.test/objects/object-fixture",
+    "commit_token": "<redacted>",
+    "expires_at": "2026-08-06T00:05:00Z"
+  },
+  "commit": {
+    "method": "attachment.commit_object",
+    "body": {
+      "attachment_id": "att-fixture",
+      "slot_id": "slot-fixture",
+      "commit_token": "<redacted>",
+      "size": "12",
+      "digest": {"alg": "sha-256", "value_b64u": "fixture-digest"},
+      "object_encryption_mode": "none"
+    }
+  },
+  "manifest": {
+    "attachments": [
+      {
+        "attachment_id": "att-fixture",
+        "filename": "fixture.pdf",
+        "mime_type": "application/pdf",
+        "size": "12",
+        "digest": {"alg": "sha-256", "value_b64u": "fixture-digest"},
+        "access_info": {"object_uri": "https://objects.example.test/objects/object-fixture"},
+        "encryption_info": {"mode": "none"}
+      }
+    ],
+    "caption": "fixture attachment",
+    "primary_attachment_id": "att-fixture"
+  },
+  "download_ticket": {
+    "method": "attachment.get_download_ticket",
+    "direct_body": {
+      "attachment_id": "att-fixture",
+      "object_uri": "https://objects.example.test/objects/object-fixture",
+      "requester_did": "did:wba:example.test:user:bob:e1_fixture",
+      "message_security_profile": "transport-protected",
+      "message_id": "fixture-message-id",
+      "message_target_did": "did:wba:example.test:user:bob:e1_fixture",
+      "one_time": true
+    },
+    "group_body": {
+      "attachment_id": "att-fixture",
+      "object_uri": "https://objects.example.test/objects/object-fixture",
+      "requester_did": "did:wba:example.test:user:bob:e1_fixture",
+      "message_security_profile": "transport-protected",
+      "message_id": "fixture-message-id",
+      "group_did": "did:wba:groups.example.test:group:fixture:e1_group",
+      "one_time": true
+    },
+    "result": {"download_ticket_b64u": "<redacted>", "expires_at": "2026-08-06T00:10:00Z"}
+  }
+}

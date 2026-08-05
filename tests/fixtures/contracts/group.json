@@ -1,0 +1,55 @@
+{
+  "capability_requirements": {
+    "profiles": ["anp.group.base.v1"],
+    "security_profiles": ["transport-protected"],
+    "content_types": ["text/plain", "application/anp-attachment-manifest+json"],
+    "service_did": "<from-capabilities>"
+  },
+  "create": {
+    "method": "group.create",
+    "meta": {
+      "profile": "anp.group.base.v1",
+      "security_profile": "transport-protected",
+      "sender_did": "did:wba:example.test:user:alice:e1_fixture",
+      "target": {"kind": "service", "did": "did:wba:message.example.test"},
+      "operation_id": "fixture-group-create-operation",
+      "created_at": "2026-08-06T00:00:00Z",
+      "content_type": "application/json"
+    },
+    "auth": {"scheme": "anp-rfc9421-origin-proof-v1", "origin_proof": "<redacted>"},
+    "body": {
+      "group_profile": {"display_name": "Fixture Group", "discoverability": "private"},
+      "group_policy": {
+        "message_security_profile": "transport-protected",
+        "bootstrap_security_profile": "transport-protected",
+        "admission_mode": "admin-add",
+        "permissions": {
+          "send": "member",
+          "add": "admin",
+          "remove": "admin",
+          "update_profile": "admin",
+          "update_policy": "owner"
+        },
+        "attachments_allowed": true,
+        "max_members": "500"
+      }
+    }
+  },
+  "add": {
+    "method": "group.add",
+    "profile": "anp.group.base.v1",
+    "body": {"member_did": "did:wba:example.test:user:bob:e1_fixture", "role": "member"}
+  },
+  "send_text": {
+    "method": "group.send",
+    "profile": "anp.group.base.v1",
+    "content_type": "text/plain",
+    "body": {"text": "hello group"}
+  },
+  "reads": {
+    "info": {"method": "group.get_info", "profile": "anp.group.base.v1"},
+    "list": {"method": "group.list", "profile": "anp.group.local.v1"},
+    "members": {"method": "group.list_members", "profile": "anp.group.local.v1"},
+    "messages": {"method": "group.list_messages", "profile": "anp.group.local.v1"}
+  }
+}
