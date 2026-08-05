@@ -8,17 +8,24 @@ import ipaddress
 import mimetypes
 import os
 import stat
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 
-from awiki_lite_cli.domain.models import AttachmentRef, AuthenticatedIdentity, UnlockedIdentity
+from awiki_lite_cli.domain.models import (
+    AttachmentContext,
+    AttachmentRef,
+    AuthenticatedIdentity,
+    UnlockedIdentity,
+)
+from awiki_lite_cli.infrastructure.anp_sdk import resolve_attachment_service_did
 from awiki_lite_cli.infrastructure.attachment_manifest import MANIFEST_CONTENT_TYPE
 from awiki_lite_cli.infrastructure.message_service import build_capabilities, validate_did
 from awiki_lite_cli.infrastructure.rpc import call_json_rpc
@@ -50,6 +57,37 @@ class AttachmentSlot:
 class CommittedAttachment:
     attachment: AttachmentRef
     committed_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadTicket:
+    value: str = field(repr=False)
+    expires_at: str = ""
+
+
+class DownloadDestination:
+    """An owner-controlled directory fd and a no-overwrite basename."""
+
+    def __init__(self, directory: Path, directory_fd: int, filename: str) -> None:
+        self.directory = directory
+        self.directory_fd = directory_fd
+        self.filename = filename
+        self._closed = False
+
+    @property
+    def path(self) -> Path:
+        return self.directory / self.filename
+
+    def close(self) -> None:
+        if not self._closed:
+            os.close(self.directory_fd)
+            self._closed = True
+
+    def __enter__(self) -> DownloadDestination:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,10 +264,63 @@ def build_abort_object(
     }
 
 
+def build_download_ticket(
+    requester_did: str,
+    service_did: str,
+    context: AttachmentContext,
+    operation_id: str,
+    created_at: str,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "attachment_id": context.attachment.attachment_id,
+        "object_uri": _https_uri(context.attachment.object_uri, "object_uri"),
+        "requester_did": validate_did(requester_did),
+        "message_security_profile": TRANSPORT_PROTECTED,
+        "message_id": _nonempty(context.message_id, "message_id"),
+        "one_time": True,
+    }
+    if (context.message_target_did is None) == (context.group_did is None):
+        raise ValueError("attachment context target is invalid")
+    if context.message_target_did is not None:
+        body["message_target_did"] = validate_did(context.message_target_did)
+    else:
+        body["group_did"] = validate_did(str(context.group_did))
+    return {
+        "meta": _control_meta(requester_did, service_did, operation_id, created_at),
+        "body": body,
+    }
+
+
+def prepare_download_destination(output_dir: Path, filename: str) -> DownloadDestination:
+    safe_filename = _safe_filename(filename)
+    directory = output_dir.absolute()
+    directory_fd = _open_directory_without_symlinks(directory)
+    try:
+        opened = os.fstat(directory_fd)
+        if not stat.S_ISDIR(opened.st_mode) or opened.st_uid != os.geteuid():
+            raise ValueError("attachment output directory must be owned by the current user")
+        try:
+            os.stat(safe_filename, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError("attachment output file already exists")
+        return DownloadDestination(directory, directory_fd, safe_filename)
+    except Exception:
+        os.close(directory_fd)
+        raise
+
+
 class AttachmentService:
-    def __init__(self, client: httpx.AsyncClient, base_url: str) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        base_url: str,
+        service_resolver: Callable[[str], Awaitable[str]] = resolve_attachment_service_did,
+    ) -> None:
         self.client = client
         self.endpoint = base_url.rstrip("/") + "/im/rpc"
+        self.service_resolver = service_resolver
 
     async def capabilities(
         self, identity: AuthenticatedIdentity | UnlockedIdentity
@@ -342,6 +433,122 @@ class AttachmentService:
         """Try to reclaim an uncommitted slot without masking the original failure."""
         with suppress(Exception):
             await self.abort(identity, service_did, slot, operation_id, created_at)
+
+    async def get_download_ticket(
+        self, identity: AuthenticatedIdentity, context: AttachmentContext
+    ) -> DownloadTicket:
+        _https_uri(context.attachment.object_uri, "object_uri")
+        try:
+            service_did = validate_did(await self.service_resolver(context.sender_did))
+        except ValueError as exc:
+            raise RuntimeError("resolved attachment service DID is invalid") from exc
+        params = build_download_ticket(
+            identity.identity.did,
+            service_did,
+            context,
+            str(uuid4()),
+            new_created_at(),
+        )
+        result = _object(
+            await call_json_rpc(
+                self.client,
+                self.endpoint,
+                "attachment.get_download_ticket",
+                params,
+                access_token=identity.session.access_token,
+            )
+        )
+        if set(result) != {"download_ticket_b64u", "expires_at", "ticket_binding"}:
+            raise RuntimeError("attachment service returned an invalid download-ticket result")
+        binding = result.get("ticket_binding")
+        expected_binding = {
+            key: value for key, value in params["body"].items() if key != "one_time"
+        }
+        if not isinstance(binding, dict) or binding != expected_binding:
+            raise RuntimeError("attachment service returned a mismatched download-ticket binding")
+        expires_at = _nonempty(result.get("expires_at"), "expires_at")
+        _require_unexpired(expires_at, "attachment download ticket")
+        return DownloadTicket(
+            _nonempty(result.get("download_ticket_b64u"), "download ticket"), expires_at
+        )
+
+    async def download(
+        self,
+        ticket: DownloadTicket,
+        attachment: AttachmentRef,
+        destination: DownloadDestination,
+    ) -> Path:
+        _require_unexpired(ticket.expires_at, "attachment download ticket")
+        uri = _https_uri(attachment.object_uri, "object_uri")
+        temporary_name = f".awiki-lite-{uuid4()}.part"
+        temporary_fd: int | None = None
+        try:
+            async with self.client.stream(
+                "GET",
+                uri,
+                headers={
+                    "Authorization": f"Bearer {ticket.value}",
+                    "Accept-Encoding": "identity",
+                },
+                follow_redirects=False,
+            ) as response:
+                response.raise_for_status()
+                encoding = response.headers.get("Content-Encoding")
+                if encoding is not None and encoding.lower() != "identity":
+                    raise RuntimeError("attachment download returned unsupported content encoding")
+                length = response.headers.get("Content-Length")
+                if length is not None and (
+                    not length.isascii() or not length.isdecimal() or int(length) != attachment.size
+                ):
+                    raise RuntimeError("attachment download size does not match the Manifest")
+                flags = (
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                )
+                temporary_fd = os.open(
+                    temporary_name, flags, 0o600, dir_fd=destination.directory_fd
+                )
+                os.fchmod(temporary_fd, 0o600)
+                digest = hashlib.sha256()
+                total = 0
+                async for chunk in response.aiter_bytes(CHUNK_SIZE):
+                    total += len(chunk)
+                    if total > attachment.size:
+                        raise RuntimeError("attachment download exceeds the Manifest size")
+                    digest.update(chunk)
+                    _write_all(temporary_fd, chunk)
+                encoded = base64.urlsafe_b64encode(digest.digest()).rstrip(b"=").decode("ascii")
+                if total != attachment.size or encoded != attachment.sha256_b64u:
+                    raise RuntimeError("attachment download failed integrity verification")
+                os.fsync(temporary_fd)
+                os.close(temporary_fd)
+                temporary_fd = None
+            try:
+                os.link(
+                    temporary_name,
+                    destination.filename,
+                    src_dir_fd=destination.directory_fd,
+                    dst_dir_fd=destination.directory_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError as exc:
+                raise ValueError("attachment output file already exists") from exc
+            os.unlink(temporary_name, dir_fd=destination.directory_fd)
+            os.fsync(destination.directory_fd)
+            return destination.path
+        except (ValueError, RuntimeError, httpx.HTTPError):
+            raise
+        except OSError as exc:
+            raise RuntimeError("attachment download could not be published safely") from exc
+        finally:
+            if temporary_fd is not None:
+                with suppress(OSError):
+                    os.close(temporary_fd)
+            with suppress(OSError):
+                os.unlink(temporary_name, dir_fd=destination.directory_fd)
 
     async def _control(
         self, identity: UnlockedIdentity, method: str, params: dict[str, Any]
@@ -530,13 +737,54 @@ def _nonempty(value: Any, field_name: str) -> str:
     return value
 
 
-def _require_unexpired(value: str) -> None:
+def _require_unexpired(value: str, subject: str = "attachment upload slot") -> None:
     try:
         expires_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
         raise RuntimeError("attachment service returned an invalid expires_at") from exc
     if expires_at.tzinfo is None or expires_at <= datetime.now(timezone.utc):
-        raise RuntimeError("attachment upload slot has expired")
+        raise RuntimeError(f"{subject} has expired")
+
+
+def _safe_filename(value: str) -> str:
+    if (
+        not value
+        or value in {".", ".."}
+        or Path(value).name != value
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+        or len(value.encode()) > 255
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError("attachment filename is unsafe")
+    return value
+
+
+def _open_directory_without_symlinks(path: Path) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        current_fd = os.open(path.anchor, flags)
+    except OSError as exc:  # pragma: no cover - a broken filesystem root is unrecoverable here
+        raise ValueError("attachment output directory is unavailable") from exc
+    try:
+        for component in path.parts[1:]:
+            next_fd = os.open(component, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except OSError as exc:
+        os.close(current_fd)
+        raise ValueError("attachment output directory must not contain symlinks") from exc
+
+
+def _write_all(fd: int, value: bytes) -> None:
+    view = memoryview(value)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise RuntimeError("attachment download could not be written")
+        view = view[written:]
 
 
 def _object(value: Any) -> dict[str, Any]:

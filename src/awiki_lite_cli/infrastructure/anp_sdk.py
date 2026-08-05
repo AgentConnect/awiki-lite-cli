@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.metadata import version
 from typing import Any
+from urllib.parse import urlsplit
 
 from anp.authentication import (  # type: ignore[import-untyped]
     PROFILE_CORE_BINDING_V1,
@@ -20,6 +21,7 @@ from anp.authentication import (  # type: ignore[import-untyped]
     DeviceManifestEntry,
     build_vnext_did_document,
     create_did_wba_document,
+    resolve_did_document,
     validate_device_manifest,
 )
 from anp.proof import (  # type: ignore[import-untyped]
@@ -38,7 +40,14 @@ CANONICAL_MANIFEST_PROFILES = (
     PROFILE_GROUP_BASE_V1,
     PROFILE_GROUP_E2EE_V2,
 )
-RUNTIME_PROFILES = (PROFILE_CORE_BINDING_V1, PROFILE_IDENTITY_DISCOVERY_V1, PROFILE_DIRECT_BASE_V1)
+ATTACHMENT_PROFILE = "anp.attachment.v1"
+RUNTIME_PROFILES = (
+    PROFILE_CORE_BINDING_V1,
+    PROFILE_IDENTITY_DISCOVERY_V1,
+    PROFILE_DIRECT_BASE_V1,
+    PROFILE_GROUP_BASE_V1,
+    ATTACHMENT_PROFILE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +84,13 @@ def generate_identity(hostname: str, handle: str, message_service_url: str) -> G
                 "id": "#message",
                 "type": "ANPMessageService",
                 "serviceEndpoint": message_service_url.rstrip("/") + "/im/rpc",
-                "profiles": [PROFILE_CORE_BINDING_V1, PROFILE_DIRECT_BASE_V1],
+                "serviceDid": _default_service_did(message_service_url),
+                "profiles": [
+                    PROFILE_CORE_BINDING_V1,
+                    PROFILE_DIRECT_BASE_V1,
+                    PROFILE_GROUP_BASE_V1,
+                    ATTACHMENT_PROFILE,
+                ],
                 "securityProfiles": ["transport-protected"],
             }
         ],
@@ -150,6 +165,89 @@ def generate_origin_proof(
     )
     return dict(
         generate_rfc9421_origin_proof(method, meta, body, private_key, key_id, options=options)
+    )
+
+
+async def resolve_attachment_service_did(sender_did: str) -> str:
+    """Resolve and proof-check the sender's compatible ANPMessageService serviceDid."""
+    _validate_public_wba_did(sender_did)
+    try:
+        document = await resolve_did_document(sender_did, verify_proof=True)
+    except Exception:
+        raise RuntimeError("unable to resolve the attachment sender DID document") from None
+    return select_attachment_service_did(sender_did, document)
+
+
+def select_attachment_service_did(sender_did: str, document: Mapping[str, Any]) -> str:
+    if document.get("id") != sender_did:
+        raise RuntimeError("resolved attachment sender DID document does not match")
+    services = document.get("service")
+    if not isinstance(services, list):
+        raise RuntimeError("attachment sender DID document has no compatible service")
+    candidates: list[tuple[int, int, str]] = []
+    for index, raw in enumerate(services):
+        if not isinstance(raw, dict) or raw.get("type") != "ANPMessageService":
+            continue
+        profiles = raw.get("profiles")
+        security = raw.get("securityProfiles", raw.get("security_profiles"))
+        service_did = raw.get("serviceDid")
+        endpoint = raw.get("serviceEndpoint")
+        if (
+            not isinstance(profiles, list)
+            or ATTACHMENT_PROFILE not in profiles
+            or not isinstance(security, list)
+            or "transport-protected" not in security
+            or not isinstance(service_did, str)
+            or len(service_did.split(":")) < 3
+            or not service_did.startswith("did:wba:")
+            or not isinstance(endpoint, str)
+            or not _safe_https_endpoint(endpoint)
+        ):
+            continue
+        priority = raw.get("priority")
+        rank = priority if isinstance(priority, int) else 2**31 - 1
+        candidates.append((rank, index, service_did))
+    if not candidates:
+        raise RuntimeError("attachment sender DID document has no compatible service")
+    candidates.sort()
+    return candidates[0][2]
+
+
+def _validate_public_wba_did(value: str) -> None:
+    import ipaddress
+    from urllib.parse import unquote
+
+    parts = value.split(":")
+    if len(parts) < 3 or parts[:2] != ["did", "wba"]:
+        raise RuntimeError("attachment sender DID is invalid")
+    hostname = unquote(parts[2]).lower().rstrip(".")
+    if not hostname or hostname == "localhost" or hostname.endswith(".localhost"):
+        raise RuntimeError("attachment sender DID is unsafe to resolve")
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return
+    if not address.is_global:
+        raise RuntimeError("attachment sender DID is unsafe to resolve")
+
+
+def _default_service_did(message_service_url: str) -> str:
+    parsed = urlsplit(message_service_url)
+    hostname = parsed.hostname
+    if parsed.scheme != "https" or not hostname or parsed.username or parsed.password:
+        raise ValueError("Message Service URL must be an authority-safe HTTPS URL")
+    return f"did:wba:{hostname}"
+
+
+def _safe_https_endpoint(value: str) -> bool:
+    parsed = urlsplit(value)
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
     )
 
 

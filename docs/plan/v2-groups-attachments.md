@@ -252,7 +252,7 @@ uv run python scripts/remote_group_attachment_e2e.py --target awiki-info-testing
 | 04 群工作流 | done | create/list/info/members/add/send/messages CLI 与 exact-retry workflow | focused group/CLI/direct regression pytest 18 passed；mypy/ruff 通过 |
 | 05 附件上传 | done | 单 fd 文件快照、P7 v1 control、受限 HTTPS 流式 PUT、best-effort abort | focused attachment/contract/state/group/direct pytest 38 passed；mypy/ruff 通过 |
 | 06 附件消息 | done | 单附件 Manifest、Direct/Group send、三阶段恢复、认证投影 context | focused attachment/group/direct/CLI regression pytest 64 passed；mypy/ruff 通过 |
-| 07 附件下载 | pending | ticket + verified atomic download | 待执行 |
+| 07 附件下载 | done | sender DID 服务解析、绑定 ticket、流式校验、0600 no-replace 原子发布 | focused download/attachment/group/direct/registration pytest 78 passed；mypy/ruff 通过 |
 | 08 发布门禁 | pending | 文档、build、远程 E2E | 待执行 |
 
 每个 Step 必须依次完成实现、focused tests、Review、修复、聚焦 commit 和台账回填。前一步未验证并提交，不进入下一步；任何范围、公开命令、profile 或状态格式变更必须先修改本 Plan。

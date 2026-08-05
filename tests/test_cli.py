@@ -21,7 +21,7 @@ def test_attachment_help_exposes_only_completed_commands() -> None:
     result = runner.invoke(app, ["attachment", "--help"])
     assert result.exit_code == 0
     assert "send" in result.stdout
-    assert "download" not in result.stdout
+    assert "download" in result.stdout
 
 
 def test_group_help_exposes_only_v02_commands() -> None:

@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Coroutine
 from pathlib import Path
+from typing import Annotated, Any, TypeVar
 
 import httpx
 import typer
 
 from awiki_lite_cli.application.attachments import AttachmentWorkflow
 from awiki_lite_cli.config import Settings
+from awiki_lite_cli.domain.models import AuthenticatedIdentity
 from awiki_lite_cli.infrastructure.attachment_service import AttachmentService
 from awiki_lite_cli.infrastructure.group_service import GroupService
 from awiki_lite_cli.infrastructure.message_service import MessageService
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
 
-app = typer.Typer(help="Send one plain transport-protected attachment.")
+app = typer.Typer(help="Send and download one plain transport-protected attachment.")
+T = TypeVar("T")
 
 
 @app.command("send")
@@ -31,11 +35,22 @@ def send(
         typer.echo("Invalid input: choose exactly one of --to and --group", err=True)
         raise typer.Exit(2)
     passphrase = typer.prompt("Local key passphrase", hide_input=True)
-    message_id, attachment_id = _run(file, recipient_did, group_did, caption, passphrase)
+    message_id, attachment_id = _run_send(file, recipient_did, group_did, caption, passphrase)
     typer.echo(f"Sent attachment {attachment_id} in message {message_id}")
 
 
-def _run(
+@app.command("download")
+def download(
+    message_id: str,
+    attachment_id: str,
+    output: Annotated[Path | None, typer.Option("--output")] = None,
+) -> None:
+    """Download one attachment from a previously refreshed authenticated message."""
+    result = _run_download(message_id, attachment_id, output or Path.cwd())
+    typer.echo(f"Downloaded attachment to {result}")
+
+
+def _run_send(
     file: Path,
     recipient_did: str | None,
     group_did: str | None,
@@ -63,6 +78,34 @@ def _run(
                 caption=caption,
             )
 
+    return _invoke_with_errors(store, invoke)
+
+
+def _run_download(message_id: str, attachment_id: str, output: Path) -> Path:
+    settings = Settings.from_env()
+    store = SecureStateStore(settings.state_dir)
+
+    async def invoke() -> Path:
+        async with httpx.AsyncClient(
+            timeout=20.0, trust_env=False, follow_redirects=False
+        ) as client:
+            workflow = AttachmentWorkflow(
+                AttachmentService(client, settings.message_service_url),
+                MessageService(client, settings.message_service_url),
+                GroupService(client, settings.message_service_url),
+                store,
+            )
+            return await workflow.download(
+                AuthenticatedIdentity(store.load_public(), store.load_session()),
+                message_id,
+                attachment_id,
+                output,
+            )
+
+    return _invoke_with_errors(store, invoke)
+
+
+def _invoke_with_errors(store: SecureStateStore, invoke: Callable[[], Coroutine[Any, Any, T]]) -> T:
     try:
         return asyncio.run(invoke())
     except ValueError as exc:

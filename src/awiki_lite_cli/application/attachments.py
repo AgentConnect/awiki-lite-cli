@@ -9,9 +9,13 @@ from uuid import NAMESPACE_URL, uuid5
 
 import httpx
 
-from awiki_lite_cli.domain.models import GroupMessage, UnlockedIdentity
+from awiki_lite_cli.domain.models import AuthenticatedIdentity, GroupMessage, UnlockedIdentity
 from awiki_lite_cli.infrastructure.attachment_manifest import normalize_caption
-from awiki_lite_cli.infrastructure.attachment_service import AttachmentService, prepare_file
+from awiki_lite_cli.infrastructure.attachment_service import (
+    AttachmentService,
+    prepare_download_destination,
+    prepare_file,
+)
 from awiki_lite_cli.infrastructure.group_service import GroupService, validate_group_did
 from awiki_lite_cli.infrastructure.message_service import MessageService, validate_did
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
@@ -147,6 +151,20 @@ class AttachmentWorkflow:
                 raise
             self.store.complete_operation(pending)
             return message_id, committed.attachment.attachment_id
+
+    async def download(
+        self,
+        identity: AuthenticatedIdentity,
+        message_id: str,
+        attachment_id: str,
+        output_dir: Path,
+    ) -> Path:
+        if not message_id or not attachment_id:
+            raise ValueError("message and attachment identifiers must not be empty")
+        context = self.store.load_attachment_context(message_id, attachment_id)
+        with prepare_download_destination(output_dir, context.attachment.filename) as destination:
+            ticket = await self.attachments.get_download_ticket(identity, context)
+            return await self.attachments.download(ticket, context.attachment, destination)
 
 
 def _target(recipient_did: str | None, group_did: str | None) -> tuple[str, str, str]:
