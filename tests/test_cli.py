@@ -6,14 +6,22 @@ from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 runner = CliRunner()
 
 
-def test_root_help_exposes_only_v1_capability_groups() -> None:
+def test_root_help_exposes_only_implemented_capability_groups() -> None:
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
-    for command in ("register", "dm"):
+    for command in ("register", "dm", "group"):
         assert command in result.stdout
-    assert "group" not in result.stdout
     assert "attachment" not in result.stdout
+
+
+def test_group_help_exposes_only_v02_commands() -> None:
+    result = runner.invoke(app, ["group", "--help"])
+    assert result.exit_code == 0
+    for command in ("create", "list", "info", "members", "add", "send", "messages"):
+        assert command in result.stdout
+    for command in ("remove", "leave", "e2ee"):
+        assert command not in result.stdout
 
 
 def test_version() -> None:

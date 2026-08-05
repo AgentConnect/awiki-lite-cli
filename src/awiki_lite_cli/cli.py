@@ -3,7 +3,7 @@
 import typer
 
 from awiki_lite_cli import __version__
-from awiki_lite_cli.commands import direct, identity
+from awiki_lite_cli.commands import direct, groups, identity
 
 app = typer.Typer(
     name="awiki-lite",
@@ -12,6 +12,7 @@ app = typer.Typer(
 )
 app.command("register")(identity.register)
 app.add_typer(direct.app, name="dm")
+app.add_typer(groups.app, name="group")
 
 
 @app.callback(invoke_without_command=True)
