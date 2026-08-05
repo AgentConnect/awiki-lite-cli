@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
+import secrets
 import stat
 import tempfile
+import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from cryptography.hazmat.primitives import serialization
 
-from awiki_lite_cli.domain.models import IdentityState, SessionState, UnlockedIdentity
+from awiki_lite_cli.domain.models import IdentityState, PendingSend, SessionState, UnlockedIdentity
 
 
 class StateError(RuntimeError):
@@ -26,6 +31,10 @@ class IdentityExistsError(StateError):
 
 
 class IdentityMissingError(StateError):
+    pass
+
+
+class PendingOperationError(StateError):
     pass
 
 
@@ -85,6 +94,9 @@ class SecureStateStore:
             self._reject_unsafe_target(self.root / "identity.json")
             if self.exists:
                 raise IdentityExistsError("a local identity already exists")
+            existing_pending = self._load_pending_identity_unlocked()
+            if existing_pending is not None:
+                raise IdentityExistsError("a registration is already pending")
             required = {"root-key", "device-signing", "device-agreement"}
             if set(private_keys) != required:
                 raise StateError("registration key set is incomplete")
@@ -118,8 +130,12 @@ class SecureStateStore:
                 "device_id": identity.device_id,
                 "did_document": identity.did_document,
             }
-            self._atomic_json(self.root / "identity.json", identity_data)
+            pending = self._load_pending_identity_unlocked()
+            if pending != identity:
+                raise StateError("pending registration does not match the accepted identity")
+            # Publish identity.json last: its presence is the committed-state marker.
             self._atomic_json(self.root / "session.json", {"access_token": access_token})
+            self._atomic_json(self.root / "identity.json", identity_data)
             self.clear_pending()
 
     def load_public(self) -> IdentityState:
@@ -152,8 +168,11 @@ class SecureStateStore:
         return UnlockedIdentity(identity, session, keys[0], keys[1], keys[2])
 
     def load_pending_identity(self) -> IdentityState | None:
+        return self._load_pending_identity_unlocked()
+
+    def _load_pending_identity_unlocked(self) -> IdentityState | None:
         path = self.root / "pending-registration.json"
-        if not path.exists():
+        if not path.exists() and not path.is_symlink():
             return None
         data = self._read_json(path)
         try:
@@ -205,6 +224,93 @@ class SecureStateStore:
         if path.exists() and not path.is_symlink():
             path.unlink()
 
+    def prepare_send(self, recipient_did: str, text: str) -> PendingSend:
+        """Persist stable IDs before a logical send; reuse them after an unknown result."""
+        content_sha256 = hashlib.sha256(text.encode()).hexdigest()
+        path = self.root / "pending-send.json"
+        with self.lock():
+            if path.exists() or path.is_symlink():
+                pending = self._parse_pending_send(self._read_json(path))
+                if (
+                    pending.recipient_did != recipient_did
+                    or pending.content_sha256 != content_sha256
+                ):
+                    raise PendingOperationError(
+                        "another send has an unknown result; retry the exact same command"
+                    )
+                return pending
+            pending = PendingSend(
+                recipient_did=recipient_did,
+                content_sha256=content_sha256,
+                operation_id=str(uuid4()),
+                message_id=str(uuid4()),
+                created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                proof_created=int(time.time()),
+                proof_nonce=secrets.token_urlsafe(12),
+            )
+            self._atomic_json(
+                path,
+                {
+                    "recipient_did": pending.recipient_did,
+                    "content_sha256": pending.content_sha256,
+                    "operation_id": pending.operation_id,
+                    "message_id": pending.message_id,
+                    "created_at": pending.created_at,
+                    "proof_created": pending.proof_created,
+                    "proof_nonce": pending.proof_nonce,
+                },
+            )
+            return pending
+
+    def complete_send(self, pending: PendingSend) -> None:
+        path = self.root / "pending-send.json"
+        with self.lock():
+            current = self._parse_pending_send(self._read_json(path))
+            if current != pending:
+                raise PendingOperationError("pending send state changed unexpectedly")
+            path.unlink()
+            self._fsync_directory(path.parent)
+
+    def abandon_send(self, pending: PendingSend) -> None:
+        """Discard IDs only after the service explicitly rejects the operation."""
+        path = self.root / "pending-send.json"
+        with self.lock():
+            if not path.exists() and not path.is_symlink():
+                return
+            current = self._parse_pending_send(self._read_json(path))
+            if current == pending:
+                path.unlink()
+                self._fsync_directory(path.parent)
+
+    @staticmethod
+    def _parse_pending_send(data: Mapping[str, Any]) -> PendingSend:
+        try:
+            strings = [
+                str(data[name])
+                for name in (
+                    "recipient_did",
+                    "content_sha256",
+                    "operation_id",
+                    "message_id",
+                    "created_at",
+                    "proof_nonce",
+                )
+            ]
+            proof_created = int(data["proof_created"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise StateError("pending send state is invalid") from exc
+        if not all(strings) or len(strings[1]) != 64 or proof_created <= 0:
+            raise StateError("pending send state is invalid")
+        return PendingSend(
+            recipient_did=strings[0],
+            content_sha256=strings[1],
+            operation_id=strings[2],
+            message_id=strings[3],
+            created_at=strings[4],
+            proof_created=proof_created,
+            proof_nonce=strings[5],
+        )
+
     @staticmethod
     def _validate_passphrase(passphrase: str) -> None:
         if len(passphrase) < 12 or not passphrase.strip():
@@ -219,8 +325,27 @@ class SecureStateStore:
                 raise StateError("state directory is not owned by the current user")
             os.chmod(path, 0o700)
             return
-        path.mkdir(mode=0o700, parents=True)
+        self._validate_creation_parent(path.parent)
+        try:
+            path.mkdir(mode=0o700, parents=True)
+        except FileExistsError:
+            # Another process may have created the same directory after validation.
+            self._ensure_directory(path)
+            return
         os.chmod(path, 0o700)
+
+    @staticmethod
+    def _validate_creation_parent(parent: Path) -> None:
+        candidate = parent
+        while not candidate.exists() and not candidate.is_symlink():
+            if candidate == candidate.parent:
+                raise StateError("state parent directory is unavailable")
+            candidate = candidate.parent
+        info = candidate.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise StateError("state parent directory is unsafe")
+        if info.st_uid != os.getuid():
+            raise StateError("state parent directory is not owned by the current user")
 
     @staticmethod
     def _reject_unsafe_target(path: Path) -> None:
@@ -242,15 +367,19 @@ class SecureStateStore:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            self._fsync_directory(path.parent)
         except BaseException:
             with suppress(FileNotFoundError):
                 os.unlink(temporary)
             raise
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        directory_fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
     def _read_regular(self, path: Path) -> bytes:
         try:

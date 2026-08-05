@@ -21,6 +21,17 @@ class SessionState:
 
 
 @dataclass(frozen=True, slots=True)
+class PendingSend:
+    recipient_did: str
+    content_sha256: str
+    operation_id: str
+    message_id: str
+    created_at: str
+    proof_created: int
+    proof_nonce: str
+
+
+@dataclass(frozen=True, slots=True)
 class AuthenticatedIdentity:
     identity: IdentityState
     session: SessionState

@@ -36,6 +36,11 @@ another system credential store, does not save the passphrase, and does not cach
 The state directory is mode `0700`; state, token, pending, and key files are mode `0600` and use
 atomic writes with symlink checks.
 
+If a send times out with an unknown result, the CLI retains only its IDs, timestamps, proof nonce,
+recipient DID, and a SHA-256 content fingerprint in `pending-send.json`. Repeating the exact command
+rebuilds the same signed request; different sends are refused until that result is resolved. Message
+plaintext and proof signatures are not stored in this file.
+
 Keep the state directory and passphrase safe. Losing either permanently loses control of the
 identity because v0.1 has no recovery. This protects keys at rest from ordinary local users and
 offline file copies; it does not protect a compromised user/root session, keylogger, weak
@@ -49,6 +54,14 @@ uv run ruff check .
 uv run mypy src
 uv run pytest
 uv build
+```
+
+The destructive remote E2E is opt-in and restricted to the reviewed AWiki testing target. It
+requires the sibling service/system-test workspaces and their dedicated test credentials, and it
+deletes data belonging to those two test phone scopes before and after execution:
+
+```bash
+uv run python scripts/remote_e2e.py --target awiki-info-testing
 ```
 
 The implementation plan and live execution ledger are in

@@ -1,6 +1,6 @@
 # AWiki Lite CLI 首个版本实施 Plan（注册 + 私聊）
 
-状态：Blocked（远程 peer OTP operator 权限不可用，代码与本地门禁已完成）
+状态：Done
 
 创建日期：2026-08-05
 
@@ -149,7 +149,8 @@ infrastructure/
 │   ├── device-signing.pem    # 口令加密的 PKCS#8 PEM
 │   └── device-agreement.pem  # 仅当 Manifest 必需；同样加密
 ├── session.json              # 可撤销 access token 及过期信息，不含私钥
-└── pending-registration.json # 响应丢失时的最小恢复上下文
+├── pending-registration.json # 响应丢失时的最小恢复上下文
+└── pending-send.json         # 未知发送结果的非秘密幂等重建参数
 ```
 
 `identity.json` 只能包含公开 DID 文档和非秘密元数据。任何私钥字节都不得进入该文件、`session.json`、pending 文件、日志或测试 fixture。
@@ -267,7 +268,7 @@ canonical bundle，但运行时不提供 E2EE/Group 能力；私钥文件无法�
 |---|---|
 | Domain/Application | 未注册保护、输入规范化、幂等 ID 复用、错误分类 |
 | State | 加密 PKCS#8、正确/错误口令、`0700/0600`、symlink、防半写、并发写、秘密脱敏、无 Keychain 调用 |
-| ANP contract | DID/Manifest 校验、W3C proof、origin proof、无 E2EE profile |
+| ANP contract | DID/Manifest 校验、W3C proof、origin proof、运行时不发送 E2EE profile |
 | User Service contract | validate、scoped send_otp、register 成功与全部稳定错误 |
 | Message Service contract | direct.send、inbox.get、inbox.mark_read、direct.get_history |
 | CLI | help、交互输入、退出码、空 inbox、分页输出、stderr 脱敏 |
@@ -286,17 +287,16 @@ uv run ruff check .
 uv run mypy src
 uv run pytest
 uv build
+uv run python scripts/remote_e2e.py --target awiki-info-testing
 ```
 
-远程 E2E 命令在 Step 08 落地后补入 README 和本节，未形成可重复命令前不得声称首版完成。
+远程 E2E 是显式 opt-in 的破坏性测试，只允许 reviewed `awiki-info-testing` 目标；它在执行前后
+清理两个专用测试手机号范围，不进入默认 pytest。输出不得包含手机号、OTP、token、proof 或私钥。
 
-本次执行证据（2026-08-05）：本地 Ruff format/check、mypy、26 个 pytest 和 `uv build`
-全部通过；对 `https://awiki.info/user-service/handle/rpc` 的无副作用 `validate` probe 证实
-`awiki-cli/0714/0.1.0` header 被当前部署接受。真实单身份注册已通过。双身份 E2E 的第二
-身份需要受控 peer OTP operator；当前执行用户无权读取 operator 指定的
-`/etc/awiki/user-service.env`，真实短信通道也不可用，因此在注册 B 前停止。测试创建的专用
-账号已通过 system-test cleanup 清理，本地加密临时状态已移入回收站。不得用 fixture、错误
-OTP 或缺少 fail-fast 的 shell 输出替代这项发布门禁。
+本次执行证据（2026-08-06）：本地 Ruff format/check、mypy、35 个 pytest 和 `uv build`
+全部通过。`scripts/remote_e2e.py` 对 `https://awiki.info` 完成真实 A/B 注册、能力预检、A→B
+同 payload 幂等重放、单条 inbox 投影、显式 mark-read、B→A 和双方 history；命令退出 `0`。
+脚本本次报告在测试前后从两个专用 scope 清理 37 行远程数据，临时本地状态由隔离临时目录清除。
 
 ## 11. 完成定义
 
@@ -320,12 +320,12 @@ OTP 或缺少 fail-fast 的 shell 输出替代这项发布门禁。
 | Step | 状态 | 产出 | 验证证据 |
 |---|---|---|---|
 | 01 契约冻结 | done | `docs/contracts/v0.1-wire-contract.md` 与 wire fixtures | 服务端 validator、ANP 0.9.1 API 与 fixture 测试 |
-| 02 状态仓库 | done | encrypted PKCS#8 secure state adapter | `tests/test_state.py` |
+| 02 状态仓库 | done | encrypted PKCS#8、原子发布、并发锁、pending send adapter | `tests/test_state.py`：故障注入、损坏文件、symlink、并发和幂等状态 |
 | 03 ANP adapter | done | one-device identity/document/origin proof adapter | `tests/test_anp_sdk.py` |
 | 04 注册 | done | scoped OTP、注册、response-loss staged retry | `tests/test_registration.py` |
-| 05 Direct 契约 | done | Bearer、plain payload/read builders、error boundary | `tests/test_message_service.py` |
-| 06 私聊发送 | done | `dm send` 与同 ID 网络重试 | `tests/test_message_workflows.py` |
+| 05 Direct 契约 | done | Bearer、能力预检、plain payload/read builders、error boundary | `tests/test_message_service.py` |
+| 06 私聊发送 | done | `dm send` 与跨进程完全同 payload 幂等重建 | 单元测试与远程幂等重放 |
 | 07 私聊读取 | done | inbox/显式 mark-read/history 与 E2EE 过滤 | `tests/test_message_workflows.py` |
-| 08 发布门禁 | blocked | README、build、本地门禁和远程 A 注册已完成 | peer OTP operator 权限不可用；A↔B 消息 E2E 未执行，未声称通过 |
+| 08 发布门禁 | done | README、可重复远程 E2E、build 与本地门禁 | 35 pytest；远程 A/B 双向消息、已读、history、幂等重放通过 |
 
 执行期间若需要改变范围、公开命令、协议 profile、状态格式或验收标准，必须先更新本 Plan，再开始对应编码。群聊和附件必须创建独立的后续版本 Plan，不得追加到本版本中。

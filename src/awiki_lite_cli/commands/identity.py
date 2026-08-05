@@ -24,7 +24,15 @@ def register(
     phone_value = phone or typer.prompt("Phone")
     try:
         identity = asyncio.run(_register(handle_value, phone_value))
-    except (ValueError, StateError, RuntimeError, httpx.HTTPError, JsonRpcFailure) as exc:
+    except ValueError as exc:
+        typer.echo(f"Invalid input: {exc}", err=True)
+        raise typer.Exit(2) from None
+    except JsonRpcFailure as exc:
+        typer.echo(
+            f"Registration service rejected the request (JSON-RPC code {exc.code}).", err=True
+        )
+        raise typer.Exit(1) from None
+    except (StateError, RuntimeError, httpx.HTTPError) as exc:
         typer.echo(f"Registration failed: {exc}", err=True)
         raise typer.Exit(1) from None
     typer.echo(f"Registered {identity.handle} ({identity.did})")

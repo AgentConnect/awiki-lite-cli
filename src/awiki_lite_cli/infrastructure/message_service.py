@@ -31,6 +31,9 @@ def build_direct_send(
     *,
     operation_id: str | None = None,
     message_id: str | None = None,
+    created_at: str | None = None,
+    proof_created: int | None = None,
+    proof_nonce: str | None = None,
 ) -> dict[str, Any]:
     recipient = validate_did(recipient_did)
     if not text or not text.strip():
@@ -44,7 +47,7 @@ def build_direct_send(
         "target": {"kind": "agent", "did": recipient},
         "operation_id": operation_id or str(uuid4()),
         "message_id": message_id or str(uuid4()),
-        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "created_at": created_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "content_type": "text/plain",
     }
     body = {"text": text}
@@ -54,6 +57,8 @@ def build_direct_send(
         body,
         identity.device_signing_private_key,
         identity.identity.verification_method,
+        created=proof_created,
+        nonce=proof_nonce,
     )
     return {"meta": meta, "auth": {"scheme": ORIGIN_SCHEME, "origin_proof": proof}, "body": body}
 
@@ -76,6 +81,19 @@ def build_history(did: str, peer_did: str, limit: int, skip: int = 0) -> dict[st
     )
 
 
+def build_capabilities(did: str) -> dict[str, Any]:
+    return {
+        "meta": {
+            "profile": "anp.core.binding.v1",
+            "security_profile": "transport-protected",
+            "sender_did": did,
+            "operation_id": str(uuid4()),
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        },
+        "body": {},
+    }
+
+
 def _local_params(profile: str, did: str, body: dict[str, Any]) -> dict[str, Any]:
     if not 1 <= int(body.get("limit", 1)) <= 100:
         raise ValueError("limit must be between 1 and 100")
@@ -90,8 +108,54 @@ class MessageService:
         self.client = client
         self.endpoint = base_url.rstrip("/") + "/im/rpc"
 
-    async def send(self, identity: UnlockedIdentity, recipient: str, text: str) -> ChatMessage:
-        params = build_direct_send(identity, recipient, text)
+    async def ensure_direct_base(self, identity: AuthenticatedIdentity | UnlockedIdentity) -> None:
+        result = _object(
+            await call_json_rpc(
+                self.client,
+                self.endpoint,
+                "anp.get_capabilities",
+                build_capabilities(identity.identity.did),
+                access_token=identity.session.access_token,
+            )
+        )
+        requirements = {
+            "supported_profiles": "anp.direct.base.v1",
+            "supported_security_profiles": "transport-protected",
+            "supported_content_types": "text/plain",
+        }
+        for field, required in requirements.items():
+            advertised = result.get(field)
+            if not isinstance(advertised, list) or required not in advertised:
+                raise RuntimeError(f"message service does not advertise required {required}")
+        policies = result.get("proof_policies")
+        if not isinstance(policies, dict) or policies.get("direct_base_origin_proof") != "required":
+            raise RuntimeError("message service does not advertise the required Direct Base proof")
+
+    async def send(
+        self,
+        identity: UnlockedIdentity,
+        recipient: str,
+        text: str,
+        *,
+        operation_id: str | None = None,
+        message_id: str | None = None,
+        created_at: str | None = None,
+        proof_created: int | None = None,
+        proof_nonce: str | None = None,
+        preflight: bool = True,
+    ) -> ChatMessage:
+        if preflight:
+            await self.ensure_direct_base(identity)
+        params = build_direct_send(
+            identity,
+            recipient,
+            text,
+            operation_id=operation_id,
+            message_id=message_id,
+            created_at=created_at,
+            proof_created=proof_created,
+            proof_nonce=proof_nonce,
+        )
         for attempt in range(2):
             try:
                 result = await call_json_rpc(

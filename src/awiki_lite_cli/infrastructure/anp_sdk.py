@@ -139,10 +139,14 @@ def generate_origin_proof(
     body: Mapping[str, Any],
     private_key: Any,
     key_id: str,
+    *,
+    created: int | None = None,
+    nonce: str | None = None,
 ) -> dict[str, str]:
     """Delegate request canonicalization and RFC 9421 signing to ANP."""
     options = Rfc9421OriginProofGenerationOptions(
-        created=int(time.time()), nonce=secrets.token_urlsafe(12)
+        created=created if created is not None else int(time.time()),
+        nonce=nonce if nonce is not None else secrets.token_urlsafe(12),
     )
     return dict(
         generate_rfc9421_origin_proof(method, meta, body, private_key, key_id, options=options)

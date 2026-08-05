@@ -16,7 +16,8 @@ class JsonRpcFailure(RuntimeError):
     data: Any = None
 
     def __str__(self) -> str:
-        return f"JSON-RPC {self.code}: {self.message}"
+        # A remote error could reflect credentials or signed payload fields.
+        return f"JSON-RPC request failed with code {self.code}"
 
 
 async def call_json_rpc(

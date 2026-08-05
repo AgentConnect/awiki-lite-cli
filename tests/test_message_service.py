@@ -3,6 +3,7 @@ import pytest
 from awiki_lite_cli.domain.models import IdentityState, SessionState, UnlockedIdentity
 from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
 from awiki_lite_cli.infrastructure.message_service import (
+    build_capabilities,
     build_direct_send,
     build_history,
     build_inbox,
@@ -43,6 +44,24 @@ def test_direct_builder_is_closed_plain_profile() -> None:
     assert params["auth"]["scheme"] == "anp-rfc9421-origin-proof-v1"
 
 
+def test_direct_builder_can_rebuild_identical_idempotent_payload() -> None:
+    options = {
+        "operation_id": "op",
+        "message_id": "msg",
+        "created_at": "2026-08-06T00:00:00Z",
+        "proof_created": 1785974400,
+        "proof_nonce": "stable-nonce",
+    }
+    identity = unlocked()
+    first = build_direct_send(
+        identity, "did:wba:example.test:user:bob:e1_fixture", "hello", **options
+    )
+    second = build_direct_send(
+        identity, "did:wba:example.test:user:bob:e1_fixture", "hello", **options
+    )
+    assert first == second
+
+
 def test_direct_builder_rejects_invalid_inputs() -> None:
     with pytest.raises(ValueError, match="exact"):
         build_direct_send(unlocked(), "@bob", "hello")
@@ -59,3 +78,7 @@ def test_read_builders_use_local_profiles_without_auth() -> None:
         == "anp.direct.local.v1"
     )
     assert "auth" not in build_inbox(did, 20)
+    capabilities = build_capabilities(did)
+    assert capabilities["meta"]["profile"] == "anp.core.binding.v1"
+    assert capabilities["meta"]["sender_did"] == did
+    assert capabilities["body"] == {}

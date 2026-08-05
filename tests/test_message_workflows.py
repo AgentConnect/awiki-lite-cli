@@ -13,6 +13,16 @@ from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
 from awiki_lite_cli.infrastructure.message_service import MessageService
 
 
+def capabilities() -> dict[str, object]:
+    return {
+        "service_did": "did:wba:example.test:service:message",
+        "supported_profiles": ["anp.direct.base.v1"],
+        "supported_security_profiles": ["transport-protected"],
+        "supported_content_types": ["text/plain"],
+        "proof_policies": {"direct_base_origin_proof": "required"},
+    }
+
+
 def contexts() -> tuple[UnlockedIdentity, AuthenticatedIdentity]:
     generated = generate_identity("example.test", "alice", "https://example.test")
     public = IdentityState(
@@ -41,6 +51,10 @@ async def test_send_validates_standard_acceptance_and_bearer() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
+        if body["method"] == "anp.get_capabilities":
+            return httpx.Response(
+                200, json={"jsonrpc": "2.0", "id": body["id"], "result": capabilities()}
+            )
         meta = body["params"]["meta"]
         assert request.headers["Authorization"] == "Bearer fixture-token"
         result = {
@@ -109,6 +123,10 @@ async def test_send_network_retry_reuses_idempotency_ids() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
+        if body["method"] == "anp.get_capabilities":
+            return httpx.Response(
+                200, json={"jsonrpc": "2.0", "id": body["id"], "result": capabilities()}
+            )
         metas.append(body["params"]["meta"])
         if len(metas) == 1:
             raise httpx.ReadTimeout("unknown result", request=request)
@@ -134,3 +152,20 @@ async def test_send_network_retry_reuses_idempotency_ids() -> None:
         )
     assert metas[0]["message_id"] == metas[1]["message_id"]
     assert metas[0]["operation_id"] == metas[1]["operation_id"]
+
+
+@pytest.mark.asyncio
+async def test_send_fails_closed_when_plain_capability_is_missing() -> None:
+    unlocked, _ = contexts()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        result = capabilities()
+        result["supported_content_types"] = ["application/json"]
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError, match="text/plain"):
+            await MessageService(client, "https://example.test").send(
+                unlocked, "did:wba:example.test:user:bob:e1_fixture", "hello"
+            )

@@ -11,7 +11,7 @@ import typer
 
 from awiki_lite_cli.config import Settings
 from awiki_lite_cli.domain.models import AuthenticatedIdentity, ChatMessage
-from awiki_lite_cli.infrastructure.message_service import MessageService
+from awiki_lite_cli.infrastructure.message_service import MessageService, validate_did
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
 
@@ -24,8 +24,32 @@ def send(recipient_did: str, text: str) -> None:
     """Send a plain text message to one exact DID."""
 
     async def action(service: MessageService, store: SecureStateStore) -> ChatMessage:
+        recipient = validate_did(recipient_did)
+        if not text or not text.strip():
+            raise ValueError("message text must not be empty")
+        if len(text.encode()) > 64 * 1024:
+            raise ValueError("message text is too large")
         passphrase = typer.prompt("Local key passphrase", hide_input=True)
-        return await service.send(store.unlock(passphrase), recipient_did, text)
+        identity = store.unlock(passphrase)
+        await service.ensure_direct_base(identity)
+        pending = store.prepare_send(recipient, text)
+        try:
+            message = await service.send(
+                identity,
+                recipient,
+                text,
+                operation_id=pending.operation_id,
+                message_id=pending.message_id,
+                created_at=pending.created_at,
+                proof_created=pending.proof_created,
+                proof_nonce=pending.proof_nonce,
+                preflight=False,
+            )
+        except JsonRpcFailure:
+            store.abandon_send(pending)
+            raise
+        store.complete_send(pending)
+        return message
 
     message = _run(action)
     typer.echo(f"Sent {message.message_id} to {message.target_did}")
@@ -92,7 +116,9 @@ def _run(action: Callable[[MessageService, SecureStateStore], Awaitable[T]]) -> 
             store.clear_session()
             typer.echo("Session expired; register again in this v0.1 client.", err=True)
         else:
-            typer.echo(f"Message service rejected the request: {exc}", err=True)
+            typer.echo(
+                f"Message service rejected the request (JSON-RPC code {exc.code}).", err=True
+            )
         raise typer.Exit(1) from None
     except (StateError, RuntimeError, httpx.HTTPError) as exc:
         typer.echo(f"Messaging failed: {exc}", err=True)

@@ -51,3 +51,11 @@ async def test_call_json_rpc_preserves_error_data_even_on_401() -> None:
 
     assert caught.value.code == 1401
     assert caught.value.data == {"anp_code": "client.session_unauthorized"}
+
+
+def test_rpc_failure_string_never_renders_remote_secret_material() -> None:
+    failure = JsonRpcFailure(1400, "bad OTP 123456", {"access_token": "secret-token"})
+    rendered = str(failure)
+    assert rendered == "JSON-RPC request failed with code 1400"
+    assert "123456" not in rendered
+    assert "secret-token" not in rendered
