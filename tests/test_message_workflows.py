@@ -100,3 +100,37 @@ async def test_inbox_filters_non_plain_and_mark_read_is_explicit() -> None:
         assert [message.message_id for message in messages] == ["m1"]
         assert await service.mark_read(identity, ["m1"]) == 1
     assert methods == ["inbox.get", "inbox.mark_read"]
+
+
+@pytest.mark.asyncio
+async def test_send_network_retry_reuses_idempotency_ids() -> None:
+    unlocked, _ = contexts()
+    metas: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        metas.append(body["params"]["meta"])
+        if len(metas) == 1:
+            raise httpx.ReadTimeout("unknown result", request=request)
+        meta = metas[-1]
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {
+                    "accepted": True,
+                    "message_id": meta["message_id"],
+                    "operation_id": meta["operation_id"],
+                    "target_did": meta["target"]["did"],
+                    "accepted_at": "2026-08-05T00:00:00Z",
+                },
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await MessageService(client, "https://example.test").send(
+            unlocked, "did:wba:example.test:user:bob:e1_fixture", "hello"
+        )
+    assert metas[0]["message_id"] == metas[1]["message_id"]
+    assert metas[0]["operation_id"] == metas[1]["operation_id"]

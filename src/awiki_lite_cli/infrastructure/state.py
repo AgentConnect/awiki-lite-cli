@@ -67,9 +67,19 @@ class SecureStateStore:
         self,
         identity: IdentityState,
         access_token: str,
-        private_keys: Mapping[str, object],
+        private_keys: Mapping[str, Any],
         passphrase: str,
     ) -> None:
+        self.stage_registration(identity, private_keys, passphrase)
+        self.finalize_registration(identity, access_token)
+
+    def stage_registration(
+        self,
+        identity: IdentityState,
+        private_keys: Mapping[str, Any],
+        passphrase: str,
+    ) -> None:
+        """Stage encrypted keys and public retry context before remote commit."""
         self._validate_passphrase(passphrase)
         with self.lock():
             self._reject_unsafe_target(self.root / "identity.json")
@@ -87,6 +97,20 @@ class SecureStateStore:
                 if b"BEGIN ENCRYPTED PRIVATE KEY" not in pem:
                     raise StateError("private key encryption failed")
                 self._atomic_write(self.secrets_dir / f"{name}.pem", pem)
+            pending_data = {
+                "did": identity.did,
+                "handle": identity.handle,
+                "verification_method": identity.verification_method,
+                "device_id": identity.device_id,
+                "did_document": identity.did_document,
+            }
+            self._atomic_json(self.root / "pending-registration.json", pending_data)
+
+    def finalize_registration(self, identity: IdentityState, access_token: str) -> None:
+        """Publish an already-staged identity after server acceptance."""
+        with self.lock():
+            if self.exists:
+                raise IdentityExistsError("a local identity already exists")
             identity_data = {
                 "did": identity.did,
                 "handle": identity.handle,
@@ -96,6 +120,7 @@ class SecureStateStore:
             }
             self._atomic_json(self.root / "identity.json", identity_data)
             self._atomic_json(self.root / "session.json", {"access_token": access_token})
+            self.clear_pending()
 
     def load_public(self) -> IdentityState:
         data = self._read_json(self.root / "identity.json")
@@ -123,6 +148,34 @@ class SecureStateStore:
     def unlock(self, passphrase: str) -> UnlockedIdentity:
         identity = self.load_public()
         session = self.load_session()
+        keys = self._load_keys(passphrase)
+        return UnlockedIdentity(identity, session, keys[0], keys[1], keys[2])
+
+    def load_pending_identity(self) -> IdentityState | None:
+        path = self.root / "pending-registration.json"
+        if not path.exists():
+            return None
+        data = self._read_json(path)
+        try:
+            document = data["did_document"]
+            if not isinstance(document, dict):
+                raise TypeError
+            return IdentityState(
+                str(data["did"]),
+                str(data["handle"]),
+                str(data["verification_method"]),
+                str(data["device_id"]),
+                document,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise StateError("pending registration is invalid") from exc
+
+    def unlock_pending_keys(self, passphrase: str) -> tuple[Any, Any, Any]:
+        if self.load_pending_identity() is None:
+            raise IdentityMissingError("no pending registration exists")
+        return self._load_keys(passphrase)
+
+    def _load_keys(self, passphrase: str) -> tuple[Any, Any, Any]:
         try:
             keys = [
                 serialization.load_pem_private_key(
@@ -133,7 +186,7 @@ class SecureStateStore:
             ]
         except (TypeError, ValueError) as exc:
             raise InvalidPassphraseError("unable to unlock identity") from exc
-        return UnlockedIdentity(identity, session, keys[0], keys[1], keys[2])
+        return keys[0], keys[1], keys[2]
 
     def save_pending(self, data: Mapping[str, Any]) -> None:
         forbidden = {"otp", "otp_code", "passphrase", "private_key", "access_token"}

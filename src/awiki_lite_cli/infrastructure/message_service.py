@@ -92,13 +92,21 @@ class MessageService:
 
     async def send(self, identity: UnlockedIdentity, recipient: str, text: str) -> ChatMessage:
         params = build_direct_send(identity, recipient, text)
-        result = await call_json_rpc(
-            self.client,
-            self.endpoint,
-            "direct.send",
-            params,
-            access_token=identity.session.access_token,
-        )
+        for attempt in range(2):
+            try:
+                result = await call_json_rpc(
+                    self.client,
+                    self.endpoint,
+                    "direct.send",
+                    params,
+                    access_token=identity.session.access_token,
+                )
+                break
+            except httpx.TransportError:
+                if attempt == 1:
+                    raise
+        else:  # pragma: no cover
+            raise RuntimeError("direct.send retry loop ended unexpectedly")
         value = _object(result)
         meta = params["meta"]
         required = {"accepted", "message_id", "operation_id", "target_did", "accepted_at"}

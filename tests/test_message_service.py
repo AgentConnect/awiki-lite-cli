@@ -1,4 +1,3 @@
-
 import pytest
 
 from awiki_lite_cli.domain.models import IdentityState, SessionState, UnlockedIdentity

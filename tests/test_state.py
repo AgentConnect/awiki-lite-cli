@@ -69,3 +69,12 @@ def test_short_passphrase_is_rejected_without_writes(tmp_path: Path) -> None:
     with pytest.raises(StateError, match="12"):
         store.save_registration(identity(), "token", keys(), "short")
     assert not store.exists
+
+
+def test_staged_registration_can_resume_without_plaintext_keys(tmp_path: Path) -> None:
+    store = SecureStateStore(tmp_path / "state")
+    store.stage_registration(identity(), keys(), "long passphrase value")
+    assert not store.exists
+    assert store.load_pending_identity() == identity()
+    assert store.unlock_pending_keys("long passphrase value")
+    assert b"BEGIN PRIVATE KEY" not in (store.secrets_dir / "root-key.pem").read_bytes()

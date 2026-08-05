@@ -53,3 +53,41 @@ async def test_registration_flow_sends_scoped_otp_and_persists(tmp_path: Path) -
     assert methods[1][1]["full_handle"] == "alice.example.test"
     assert methods[1][1]["purpose"] == "awiki.identity.register.v1"
     assert methods[2][1]["otp_code"] == "123456"
+
+
+@pytest.mark.asyncio
+async def test_registration_response_loss_reuses_staged_identity(tmp_path: Path) -> None:
+    register_dids: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = __import__("json").loads(request.content)
+        if body["method"] == "register":
+            did = body["params"]["did_document"]["id"]
+            register_dids.append(did)
+            if len(register_dids) == 1:
+                raise httpx.ReadTimeout("response lost", request=request)
+            result = {
+                "state": "registered",
+                "did": did,
+                "user_id": "fixture-user",
+                "access_token": "fixture-token",
+            }
+        else:
+            result = {"available": True, "ok": True}
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        store = SecureStateStore(tmp_path / "state")
+        flow = RegistrationWorkflow(
+            UserService(client, "https://example.test"), store, "https://example.test"
+        )
+        with pytest.raises(httpx.ReadTimeout):
+            await flow.finish(
+                "alice", "+15555550100", "example.test", "123456", "long passphrase value"
+            )
+        identity = await flow.finish(
+            "alice", "+15555550100", "example.test", "654321", "long passphrase value"
+        )
+
+    assert register_dids == [identity.did, identity.did]
+    assert store.exists

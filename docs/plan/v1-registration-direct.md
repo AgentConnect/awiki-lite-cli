@@ -1,6 +1,6 @@
 # AWiki Lite CLI 首个版本实施 Plan（注册 + 私聊）
 
-状态：Draft
+状态：Blocked（仅缺少两个可用远程测试身份/OTP，代码与本地门禁已完成）
 
 创建日期：2026-08-05
 
@@ -290,6 +290,11 @@ uv build
 
 远程 E2E 命令在 Step 08 落地后补入 README 和本节，未形成可重复命令前不得声称首版完成。
 
+本次执行证据（2026-08-05）：本地 Ruff format/check、mypy、26 个 pytest 和 `uv build`
+全部通过；对 `https://awiki.info/user-service/handle/rpc` 的无副作用 `validate` probe 证实
+`awiki-cli/0714/0.1.0` header 被当前部署接受。真实注册和双身份消息 E2E 未执行，因为当前
+工作区没有两套获授权的手机号/OTP；不得用 fixture 或服务端代码测试替代这项发布门禁。
+
 ## 11. 完成定义
 
 首个版本只有同时满足以下条件才完成：
@@ -312,12 +317,12 @@ uv build
 | Step | 状态 | 产出 | 验证证据 |
 |---|---|---|---|
 | 01 契约冻结 | done | `docs/contracts/v0.1-wire-contract.md` 与 wire fixtures | 服务端 validator、ANP 0.9.1 API 与 fixture 测试 |
-| 02 状态仓库 | pending | secure state adapter | 待执行 |
-| 03 ANP adapter | pending | identity/proof adapter | 待执行 |
-| 04 注册 | pending | 可用 register flow | 待执行 |
-| 05 Direct 契约 | pending | auth/payload/error adapters | 待执行 |
-| 06 私聊发送 | pending | `dm send` | 待执行 |
-| 07 私聊读取 | pending | inbox/mark-read/history | 待执行 |
-| 08 发布门禁 | pending | docs、E2E、build evidence | 待执行 |
+| 02 状态仓库 | done | encrypted PKCS#8 secure state adapter | `tests/test_state.py` |
+| 03 ANP adapter | done | one-device identity/document/origin proof adapter | `tests/test_anp_sdk.py` |
+| 04 注册 | done | scoped OTP、注册、response-loss staged retry | `tests/test_registration.py` |
+| 05 Direct 契约 | done | Bearer、plain payload/read builders、error boundary | `tests/test_message_service.py` |
+| 06 私聊发送 | done | `dm send` 与同 ID 网络重试 | `tests/test_message_workflows.py` |
+| 07 私聊读取 | done | inbox/显式 mark-read/history 与 E2EE 过滤 | `tests/test_message_workflows.py` |
+| 08 发布门禁 | blocked | README、build 与本地门禁已完成 | 缺少两个真实远程身份/手机号 OTP，尚未声称远程 E2E 通过 |
 
 执行期间若需要改变范围、公开命令、协议 profile、状态格式或验收标准，必须先更新本 Plan，再开始对应编码。群聊和附件必须创建独立的后续版本 Plan，不得追加到本版本中。

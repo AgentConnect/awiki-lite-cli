@@ -55,9 +55,9 @@ class GeneratedIdentity:
     root_key_id: str
     device_signing_key_id: str
     device_agreement_key_id: str
-    root_private_key: object
-    device_signing_private_key: object
-    device_agreement_private_key: object
+    root_private_key: Any
+    device_signing_private_key: Any
+    device_agreement_private_key: Any
 
 
 def sdk_info() -> AnpSdkInfo:
@@ -137,7 +137,7 @@ def generate_origin_proof(
     method: str,
     meta: Mapping[str, Any],
     body: Mapping[str, Any],
-    private_key: object,
+    private_key: Any,
     key_id: str,
 ) -> dict[str, str]:
     """Delegate request canonicalization and RFC 9421 signing to ANP."""
@@ -149,7 +149,7 @@ def generate_origin_proof(
     )
 
 
-def _okp_jwk_method(key_id: str, did: str, curve: str, public_key: object) -> dict[str, Any]:
+def _okp_jwk_method(key_id: str, did: str, curve: str, public_key: Any) -> dict[str, Any]:
     raw = public_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     encoded = base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
     return {

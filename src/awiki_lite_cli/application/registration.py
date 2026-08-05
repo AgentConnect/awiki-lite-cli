@@ -52,32 +52,34 @@ class RegistrationWorkflow:
     ) -> IdentityState:
         if not re.fullmatch(r"[0-9]{4,10}", otp_code.strip()):
             raise ValueError("OTP must contain 4-10 digits")
-        generated = generate_identity(domain, handle, self.message_url)
-        self.store.save_pending({"did": generated.did, "handle": handle, "domain": domain})
-        result = await self.service.register(
-            generated.did_document, handle, phone, otp_code.strip()
-        )
-        if result.get("state") != "registered" or result.get("did") != generated.did:
+        expected_handle = f"{handle}.{domain}"
+        pending = self.store.load_pending_identity()
+        if pending is not None and pending.handle == expected_handle:
+            identity = pending
+            self.store.unlock_pending_keys(passphrase)
+        else:
+            generated = generate_identity(domain, handle, self.message_url)
+            identity = IdentityState(
+                generated.did,
+                expected_handle,
+                generated.device_signing_key_id,
+                generated.device_id,
+                generated.did_document,
+            )
+            self.store.stage_registration(
+                identity,
+                {
+                    "root-key": generated.root_private_key,
+                    "device-signing": generated.device_signing_private_key,
+                    "device-agreement": generated.device_agreement_private_key,
+                },
+                passphrase,
+            )
+        result = await self.service.register(identity.did_document, handle, phone, otp_code.strip())
+        if result.get("state") != "registered" or result.get("did") != identity.did:
             raise RuntimeError("registration returned an unexpected identity state")
         token = result.get("access_token")
         if not isinstance(token, str) or not token:
             raise RuntimeError("registration did not return a device access token")
-        identity = IdentityState(
-            generated.did,
-            str(result.get("full_handle") or f"{handle}.{domain}"),
-            generated.device_signing_key_id,
-            generated.device_id,
-            generated.did_document,
-        )
-        self.store.save_registration(
-            identity,
-            token,
-            {
-                "root-key": generated.root_private_key,
-                "device-signing": generated.device_signing_private_key,
-                "device-agreement": generated.device_agreement_private_key,
-            },
-            passphrase,
-        )
-        self.store.clear_pending()
+        self.store.finalize_registration(identity, token)
         return identity
