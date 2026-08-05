@@ -247,7 +247,7 @@ uv run python scripts/remote_group_attachment_e2e.py --target awiki-info-testing
 | Step | 状态 | 产出 | 验证证据 |
 |---|---|---|---|
 | 01 契约冻结 | done | `docs/contracts/v0.2-group-attachment-wire-contract.md` 与脱敏 fixtures | `awiki.info` capability probe：Group Base v1/P7 v1/transport-protected；focused pytest 4 passed |
-| 02 状态演进 | pending | 通用 pending + attachment context | 待执行 |
+| 02 状态演进 | done | schema v2 通用 pending、v0.1 legacy read、500 条 attachment context index | focused state/regression pytest 23 passed；mypy/ruff 通过 |
 | 03 群 adapter | pending | Group Base 与 local view builders | 待执行 |
 | 04 群工作流 | pending | group CLI | 待执行 |
 | 05 附件上传 | pending | control/data plane upload | 待执行 |

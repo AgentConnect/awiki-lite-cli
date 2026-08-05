@@ -32,6 +32,20 @@ class PendingSend:
 
 
 @dataclass(frozen=True, slots=True)
+class PendingOperation:
+    schema_version: int
+    kind: str
+    target_did: str
+    input_sha256: str
+    operation_id: str
+    message_id: str | None
+    created_at: str
+    proof_created: int
+    proof_nonce: str
+    values: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
 class AuthenticatedIdentity:
     identity: IdentityState
     session: SessionState
@@ -64,3 +78,12 @@ class AttachmentRef:
     mime_type: str
     size: int
     sha256_b64u: str
+
+
+@dataclass(frozen=True, slots=True)
+class AttachmentContext:
+    message_id: str
+    sender_did: str
+    message_target_did: str | None
+    group_did: str | None
+    attachment: AttachmentRef
