@@ -7,7 +7,7 @@
       "purpose": "awiki.identity.register.v1",
       "handle": "alice",
       "domain": "example.test",
-      "full_handle": "alice@example.test"
+      "full_handle": "alice.example.test"
     }
   },
   "manifest_profiles": [
