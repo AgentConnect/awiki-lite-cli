@@ -87,3 +87,33 @@ class AttachmentContext:
     message_target_did: str | None
     group_did: str | None
     attachment: AttachmentRef
+
+
+@dataclass(frozen=True, slots=True)
+class GroupSummary:
+    group_did: str
+    display_name: str
+    group_state_version: str
+    member_count: int
+    my_role: str | None = None
+    membership_status: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GroupMember:
+    agent_did: str
+    role: str
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class GroupMessage:
+    message_id: str
+    group_did: str
+    sender_did: str
+    message_type: str
+    content: Any
+    content_type: str
+    group_event_seq: int
+    created_at: str

@@ -67,7 +67,7 @@ v0.2 在不扩大身份与同步模型的前提下增加两类能力：
 - 状态改变方法和 `group.send` 必须携带由 ANP SDK 生成的 origin proof；
 - 文本发送只允许 `text/plain` 和 `body.text`；附件发送只允许标准 attachment manifest content type 和 `body.payload`；
 - 标准成功依赖规定的响应字段与跨域时的 `group_receipt`，不依赖可选 `final_acceptance` 扩展；
-- 群列表、成员和消息读取使用 `anp.group.local.v1`，opaque cursor 只能原样传回，客户端不得解析或改写；
+- 群列表和成员读取使用 `anp.group.local.v1` opaque cursor，只能原样传回；`group.list_messages` 使用同一 profile 的 `since_seq/next_since_seq`，不得误用可靠同步 v2 cursor/checkpoint；
 - `group.list_messages` 只投影普通文本与普通附件 Manifest，过滤 E2EE、MLS、system/control 和未知类型。
 
 ### 4.2 普通附件
@@ -91,7 +91,7 @@ awiki-lite group info <GROUP_DID>
 awiki-lite group members <GROUP_DID> [--limit N] [--cursor CURSOR]
 awiki-lite group add <GROUP_DID> <MEMBER_DID>
 awiki-lite group send <GROUP_DID> <TEXT>
-awiki-lite group messages <GROUP_DID> [--limit N] [--cursor CURSOR]
+awiki-lite group messages <GROUP_DID> [--limit N] [--since-seq N]
 
 awiki-lite attachment send <FILE> (--to <DID> | --group <GROUP_DID>) [--caption TEXT]
 awiki-lite attachment download <MESSAGE_ID> <ATTACHMENT_ID> [--output DIR]
@@ -167,7 +167,7 @@ infrastructure/
 
 实现 capability gate、Group DID 校验、create/add/send builders、origin proof、标准响应校验及 list/info/members/messages local builders。
 
-验收：契约 fixture 与服务端 validator 一致；非法 target、非文本、缺 proof、E2EE profile、设备 selector、错误 cursor 和不匹配响应全部 fail closed。
+验收：契约 fixture 与服务端 validator 一致；非法 target、非文本、缺 proof、E2EE profile、设备 selector、错误 cursor/since-seq 和不匹配响应全部 fail closed。
 
 ### Step 04：群命令与工作流
 
@@ -248,7 +248,7 @@ uv run python scripts/remote_group_attachment_e2e.py --target awiki-info-testing
 |---|---|---|---|
 | 01 契约冻结 | done | `docs/contracts/v0.2-group-attachment-wire-contract.md` 与脱敏 fixtures | `awiki.info` capability probe：Group Base v1/P7 v1/transport-protected；focused pytest 4 passed |
 | 02 状态演进 | done | schema v2 通用 pending、v0.1 legacy read、500 条 attachment context index | focused state/regression pytest 23 passed；mypy/ruff 通过 |
-| 03 群 adapter | pending | Group Base 与 local view builders | 待执行 |
+| 03 群 adapter | done | capability gate、Group Base proof builders、标准结果与 local view parser | focused group/ANP/direct regression pytest 12 passed；mypy/ruff 通过 |
 | 04 群工作流 | pending | group CLI | 待执行 |
 | 05 附件上传 | pending | control/data plane upload | 待执行 |
 | 06 附件消息 | pending | Direct/Group Manifest send/read | 待执行 |
