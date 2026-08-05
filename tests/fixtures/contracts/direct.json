@@ -1,0 +1,20 @@
+{
+  "send": {
+    "method": "direct.send",
+    "meta": {
+      "profile": "anp.direct.base.v1",
+      "security_profile": "transport-protected",
+      "sender_did": "did:wba:example.test:user:alice:e1_fixture",
+      "target": {"kind": "agent", "did": "did:wba:example.test:user:bob:e1_fixture"},
+      "operation_id": "fixture-operation-id",
+      "message_id": "fixture-message-id",
+      "created_at": "2026-08-05T00:00:00Z",
+      "content_type": "text/plain"
+    },
+    "auth": {"scheme": "anp-rfc9421-origin-proof-v1", "origin_proof": "<redacted>"},
+    "body": {"text": "hello"}
+  },
+  "inbox": {"method": "inbox.get", "profile": "anp.inbox.local.v1"},
+  "mark_read": {"method": "inbox.mark_read", "profile": "anp.inbox.local.v1"},
+  "history": {"method": "direct.get_history", "profile": "anp.direct.local.v1"}
+}
