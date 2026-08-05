@@ -21,6 +21,12 @@ class SessionState:
 
 
 @dataclass(frozen=True, slots=True)
+class AuthenticatedIdentity:
+    identity: IdentityState
+    session: SessionState
+
+
+@dataclass(frozen=True, slots=True)
 class UnlockedIdentity:
     identity: IdentityState
     session: SessionState

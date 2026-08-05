@@ -32,7 +32,7 @@ def register(
 
 async def _register(handle: str, phone: str):  # type: ignore[no-untyped-def]
     settings = Settings.from_env()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
         workflow = RegistrationWorkflow(
             UserService(client, settings.user_service_url),
             SecureStateStore(settings.state_dir),

@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import httpx
 
-from awiki_lite_cli.domain.models import ChatMessage, UnlockedIdentity
+from awiki_lite_cli.domain.models import AuthenticatedIdentity, ChatMessage, UnlockedIdentity
 from awiki_lite_cli.infrastructure.anp_sdk import generate_origin_proof
 from awiki_lite_cli.infrastructure.rpc import call_json_rpc
 
@@ -118,7 +118,9 @@ class MessageService:
             str(value["accepted_at"]),
         )
 
-    async def inbox(self, identity: UnlockedIdentity, limit: int) -> tuple[list[ChatMessage], bool]:
+    async def inbox(
+        self, identity: AuthenticatedIdentity | UnlockedIdentity, limit: int
+    ) -> tuple[list[ChatMessage], bool]:
         result = await call_json_rpc(
             self.client,
             self.endpoint,
@@ -128,7 +130,9 @@ class MessageService:
         )
         return _parse_page(result), bool(_object(result).get("has_more", False))
 
-    async def mark_read(self, identity: UnlockedIdentity, ids: list[str]) -> int:
+    async def mark_read(
+        self, identity: AuthenticatedIdentity | UnlockedIdentity, ids: list[str]
+    ) -> int:
         result = await call_json_rpc(
             self.client,
             self.endpoint,
@@ -139,7 +143,7 @@ class MessageService:
         return int(_object(result).get("updated_count", 0))
 
     async def history(
-        self, identity: UnlockedIdentity, peer: str, limit: int
+        self, identity: AuthenticatedIdentity | UnlockedIdentity, peer: str, limit: int
     ) -> tuple[list[ChatMessage], bool]:
         result = await call_json_rpc(
             self.client,
