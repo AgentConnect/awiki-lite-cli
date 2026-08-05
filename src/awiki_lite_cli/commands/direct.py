@@ -10,7 +10,7 @@ import httpx
 import typer
 
 from awiki_lite_cli.config import Settings
-from awiki_lite_cli.domain.models import AuthenticatedIdentity, ChatMessage
+from awiki_lite_cli.domain.models import AttachmentContext, AuthenticatedIdentity, ChatMessage
 from awiki_lite_cli.infrastructure.message_service import MessageService, validate_did
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
@@ -67,6 +67,7 @@ def inbox(
     ) -> tuple[list[ChatMessage], bool, int]:
         identity = AuthenticatedIdentity(store.load_public(), store.load_session())
         messages, has_more = await service.inbox(identity, limit)
+        _save_attachment_contexts(store, messages)
         updated = (
             await service.mark_read(identity, [item.message_id for item in messages])
             if mark_read and messages
@@ -90,7 +91,9 @@ def history(peer_did: str, limit: int = typer.Option(20, min=1, max=100)) -> Non
         service: MessageService, store: SecureStateStore
     ) -> tuple[list[ChatMessage], bool]:
         identity = AuthenticatedIdentity(store.load_public(), store.load_session())
-        return await service.history(identity, peer_did, limit)
+        messages, has_more = await service.history(identity, peer_did, limit)
+        _save_attachment_contexts(store, messages)
+        return messages, has_more
 
     messages, has_more = _run(action)
     _render(messages)
@@ -131,4 +134,28 @@ def _render(messages: list[ChatMessage]) -> None:
         return
     for message in messages:
         timestamp = f"[{message.created_at}] " if message.created_at else ""
-        typer.echo(f"{timestamp}{message.sender_did} -> {message.target_did}: {message.text}")
+        if message.attachments:
+            attachment = message.attachments[0]
+            caption = f" caption={message.caption}" if message.caption else ""
+            typer.echo(
+                f"{timestamp}{message.sender_did} -> {message.target_did}: "
+                f"[attachment {attachment.filename} id={attachment.attachment_id} "
+                f"message={message.message_id}]{caption}"
+            )
+        else:
+            typer.echo(f"{timestamp}{message.sender_did} -> {message.target_did}: {message.text}")
+
+
+def _save_attachment_contexts(store: SecureStateStore, messages: list[ChatMessage]) -> None:
+    contexts = [
+        AttachmentContext(
+            message.message_id,
+            message.sender_did,
+            message.target_did,
+            None,
+            attachment,
+        )
+        for message in messages
+        for attachment in message.attachments
+    ]
+    store.save_attachment_contexts(contexts)

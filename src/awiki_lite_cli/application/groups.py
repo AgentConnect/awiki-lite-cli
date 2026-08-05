@@ -6,12 +6,14 @@ import hashlib
 import json
 
 from awiki_lite_cli.domain.models import (
+    AttachmentContext,
     AuthenticatedIdentity,
     GroupMember,
     GroupMessage,
     GroupSummary,
     UnlockedIdentity,
 )
+from awiki_lite_cli.infrastructure.attachment_manifest import parse_manifest
 from awiki_lite_cli.infrastructure.group_service import GroupService, validate_group_did
 from awiki_lite_cli.infrastructure.message_service import validate_did
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
@@ -90,7 +92,24 @@ class GroupWorkflow:
     async def messages(
         self, group_did: str, limit: int, since_seq: int | None
     ) -> tuple[list[GroupMessage], int | None]:
-        return await self.service.messages(self._authenticated(), group_did, limit, since_seq)
+        rows, next_seq = await self.service.messages(
+            self._authenticated(), group_did, limit, since_seq
+        )
+        contexts = []
+        for message in rows:
+            if message.message_type == "attachment_manifest":
+                attachment, _caption = parse_manifest(message.content)
+                contexts.append(
+                    AttachmentContext(
+                        message.message_id,
+                        message.sender_did,
+                        None,
+                        message.group_did,
+                        attachment,
+                    )
+                )
+        self.store.save_attachment_contexts(contexts)
+        return rows, next_seq
 
     def _authenticated(self) -> AuthenticatedIdentity:
         return AuthenticatedIdentity(self.store.load_public(), self.store.load_session())

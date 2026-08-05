@@ -9,8 +9,19 @@ from uuid import uuid4
 
 import httpx
 
-from awiki_lite_cli.domain.models import AuthenticatedIdentity, ChatMessage, UnlockedIdentity
+from awiki_lite_cli.domain.models import (
+    AttachmentRef,
+    AuthenticatedIdentity,
+    ChatMessage,
+    PendingOperation,
+    UnlockedIdentity,
+)
 from awiki_lite_cli.infrastructure.anp_sdk import generate_origin_proof
+from awiki_lite_cli.infrastructure.attachment_manifest import (
+    MANIFEST_CONTENT_TYPE,
+    build_manifest,
+    parse_manifest,
+)
 from awiki_lite_cli.infrastructure.rpc import call_json_rpc
 
 ORIGIN_SCHEME = "anp-rfc9421-origin-proof-v1"
@@ -59,6 +70,43 @@ def build_direct_send(
         identity.identity.verification_method,
         created=proof_created,
         nonce=proof_nonce,
+    )
+    return {"meta": meta, "auth": {"scheme": ORIGIN_SCHEME, "origin_proof": proof}, "body": body}
+
+
+def build_direct_attachment_send(
+    identity: UnlockedIdentity,
+    recipient_did: str,
+    attachment: AttachmentRef,
+    caption: str | None,
+    pending: PendingOperation,
+) -> dict[str, Any]:
+    recipient = validate_did(recipient_did)
+    if (
+        pending.kind != "direct.attachment.send"
+        or pending.target_did != recipient
+        or pending.message_id is None
+    ):
+        raise ValueError("pending operation does not match the Direct attachment request")
+    meta = {
+        "profile": "anp.direct.base.v1",
+        "security_profile": "transport-protected",
+        "sender_did": identity.identity.did,
+        "target": {"kind": "agent", "did": recipient},
+        "operation_id": pending.operation_id,
+        "message_id": pending.message_id,
+        "created_at": pending.created_at,
+        "content_type": MANIFEST_CONTENT_TYPE,
+    }
+    body = {"payload": build_manifest(attachment, caption)}
+    proof = generate_origin_proof(
+        "direct.send",
+        meta,
+        body,
+        identity.device_signing_private_key,
+        identity.identity.verification_method,
+        created=pending.proof_created,
+        nonce=pending.proof_nonce,
     )
     return {"meta": meta, "auth": {"scheme": ORIGIN_SCHEME, "origin_proof": proof}, "body": body}
 
@@ -190,6 +238,57 @@ class MessageService:
             str(value["accepted_at"]),
         )
 
+    async def send_attachment(
+        self,
+        identity: UnlockedIdentity,
+        recipient: str,
+        attachment: AttachmentRef,
+        caption: str | None,
+        pending: PendingOperation,
+    ) -> ChatMessage:
+        params = build_direct_attachment_send(identity, recipient, attachment, caption, pending)
+        value = await self._send_params(identity, recipient, params)
+        return ChatMessage(
+            str(value["message_id"]),
+            identity.identity.did,
+            recipient,
+            "",
+            str(value["accepted_at"]),
+            attachments=(attachment,),
+            caption=caption,
+        )
+
+    async def _send_params(
+        self, identity: UnlockedIdentity, recipient: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        for attempt in range(2):
+            try:
+                result = await call_json_rpc(
+                    self.client,
+                    self.endpoint,
+                    "direct.send",
+                    params,
+                    access_token=identity.session.access_token,
+                )
+                break
+            except httpx.TransportError:
+                if attempt == 1:
+                    raise
+        else:  # pragma: no cover
+            raise RuntimeError("direct.send retry loop ended unexpectedly")
+        value = _object(result)
+        meta = params["meta"]
+        required = {"accepted", "message_id", "operation_id", "target_did", "accepted_at"}
+        if not required.issubset(value) or value["accepted"] is not True:
+            raise RuntimeError("service returned an invalid direct.send result")
+        if (
+            value["message_id"] != meta["message_id"]
+            or value["operation_id"] != meta["operation_id"]
+            or value["target_did"] != recipient
+        ):
+            raise RuntimeError("service returned mismatched direct.send identifiers")
+        return value
+
     async def inbox(
         self, identity: AuthenticatedIdentity | UnlockedIdentity, limit: int
     ) -> tuple[list[ChatMessage], bool]:
@@ -235,6 +334,23 @@ def _parse_page(value: Any) -> list[ChatMessage]:
     output: list[ChatMessage] = []
     for item in messages:
         row = _object(item)
+        if row.get("type") == "attachment_manifest":
+            if row.get("content_type") != MANIFEST_CONTENT_TYPE:
+                raise RuntimeError("service returned an invalid attachment projection")
+            attachment, caption = parse_manifest(row.get("content"))
+            output.append(
+                ChatMessage(
+                    str(row["id"]),
+                    str(row["sender_did"]),
+                    str(row["receiver_did"]),
+                    "",
+                    str(row.get("sent_at") or row.get("created_at") or ""),
+                    bool(row.get("is_read")),
+                    (attachment,),
+                    caption,
+                )
+            )
+            continue
         if row.get("content_type") != "text/plain" or row.get("type") != "text":
             continue
         output.append(

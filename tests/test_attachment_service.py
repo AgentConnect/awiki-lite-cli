@@ -10,6 +10,7 @@ import pytest
 
 from awiki_lite_cli.domain.models import IdentityState
 from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
+from awiki_lite_cli.infrastructure.attachment_manifest import MANIFEST_CONTENT_TYPE
 from awiki_lite_cli.infrastructure.attachment_service import (
     ATTACHMENT_PROFILE,
     AttachmentService,
@@ -56,7 +57,7 @@ def capability_result() -> dict[str, object]:
         "service_did": SERVICE_DID,
         "supported_profiles": [ATTACHMENT_PROFILE],
         "supported_security_profiles": ["transport-protected"],
-        "supported_content_types": ["application/anp-attachment-manifest+json"],
+        "supported_content_types": [MANIFEST_CONTENT_TYPE],
         "limits": {"max_object_bytes": "1024"},
     }
 

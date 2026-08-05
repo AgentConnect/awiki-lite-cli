@@ -43,6 +43,7 @@ class PendingOperation:
     proof_created: int
     proof_nonce: str
     values: dict[str, str]
+    stage: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +69,8 @@ class ChatMessage:
     text: str
     created_at: str | None = None
     is_read: bool | None = None
+    attachments: tuple[AttachmentRef, ...] = ()
+    caption: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from awiki_lite_cli.domain.models import (
+    AttachmentRef,
     AuthenticatedIdentity,
     GroupMember,
     GroupMessage,
@@ -16,6 +17,11 @@ from awiki_lite_cli.domain.models import (
     UnlockedIdentity,
 )
 from awiki_lite_cli.infrastructure.anp_sdk import generate_origin_proof
+from awiki_lite_cli.infrastructure.attachment_manifest import (
+    MANIFEST_CONTENT_TYPE,
+    build_manifest,
+    parse_manifest,
+)
 from awiki_lite_cli.infrastructure.message_service import build_capabilities, validate_did
 from awiki_lite_cli.infrastructure.rpc import call_json_rpc
 
@@ -108,6 +114,27 @@ def build_group_send_text(
     )
 
 
+def build_group_send_attachment(
+    identity: UnlockedIdentity,
+    group_did: str,
+    attachment: AttachmentRef,
+    caption: str | None,
+    pending: PendingOperation,
+) -> dict[str, Any]:
+    if pending.kind != "group.attachment.send":
+        raise ValueError("pending operation does not match the Group attachment request")
+    return _signed_group_params(
+        identity,
+        "group.send",
+        "group",
+        validate_group_did(group_did),
+        MANIFEST_CONTENT_TYPE,
+        {"payload": build_manifest(attachment, caption)},
+        pending,
+        pending_kind="group.attachment.send",
+    )
+
+
 def _signed_group_params(
     identity: UnlockedIdentity,
     method: str,
@@ -116,8 +143,10 @@ def _signed_group_params(
     content_type: str,
     body: dict[str, Any],
     pending: PendingOperation,
+    *,
+    pending_kind: str | None = None,
 ) -> dict[str, Any]:
-    if pending.kind != method or pending.target_did != target_did:
+    if pending.kind != (pending_kind or method) or pending.target_did != target_did:
         raise ValueError("pending operation does not match the Group request")
     meta: dict[str, Any] = {
         "profile": GROUP_PROFILE,
@@ -288,6 +317,37 @@ class GroupService:
             created_at=str(result.get("accepted_at") or ""),
         )
 
+    async def send_attachment(
+        self,
+        identity: UnlockedIdentity,
+        group_did: str,
+        attachment: AttachmentRef,
+        caption: str | None,
+        pending: PendingOperation,
+    ) -> GroupMessage:
+        group = validate_group_did(group_did)
+        result = await self._mutate(
+            identity,
+            "group.send",
+            build_group_send_attachment(identity, group, attachment, caption, pending),
+        )
+        if (
+            result.get("group_did") != group
+            or result.get("message_id") != pending.message_id
+            or result.get("operation_id") != pending.operation_id
+        ):
+            raise RuntimeError("service returned mismatched group.send identifiers")
+        return GroupMessage(
+            message_id=str(result["message_id"]),
+            group_did=group,
+            sender_did=identity.identity.did,
+            message_type="attachment_manifest",
+            content=build_manifest(attachment, caption),
+            content_type=MANIFEST_CONTENT_TYPE,
+            group_event_seq=_positive_int(result.get("group_event_seq"), "group_event_seq"),
+            created_at=str(result.get("accepted_at") or ""),
+        )
+
     async def list_groups(
         self, identity: AuthenticatedIdentity, limit: int, cursor: str | None = None
     ) -> tuple[list[GroupSummary], str | None]:
@@ -348,13 +408,21 @@ class GroupService:
                 continue
             if row.get("group_did") != validate_group_did(group_did):
                 raise RuntimeError("service returned a message for a different group")
+            content = row.get("content")
+            if row.get("type") == "attachment_manifest":
+                if row.get("content_type") != MANIFEST_CONTENT_TYPE:
+                    raise RuntimeError("service returned an invalid attachment projection")
+                # Parse now so unsupported multi-file/E2EE manifests never enter local state.
+                parse_manifest(content)
+            elif row.get("content_type") != "text/plain" or not isinstance(content, str):
+                raise RuntimeError("service returned an invalid Group text projection")
             messages.append(
                 GroupMessage(
                     message_id=str(row["message_id"]),
                     group_did=str(row["group_did"]),
                     sender_did=str(row["sender_did"]),
                     message_type=str(row["type"]),
-                    content=row.get("content"),
+                    content=content,
                     content_type=str(row["content_type"]),
                     group_event_seq=_positive_int(row.get("group_event_seq"), "group_event_seq"),
                     created_at=str(row.get("sent_at") or row.get("created_at") or ""),

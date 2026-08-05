@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 
@@ -5,6 +6,7 @@ import httpx
 import pytest
 
 from awiki_lite_cli.domain.models import (
+    AttachmentRef,
     AuthenticatedIdentity,
     IdentityState,
     PendingOperation,
@@ -19,6 +21,7 @@ from awiki_lite_cli.infrastructure.group_service import (
     build_group_list,
     build_group_members,
     build_group_messages,
+    build_group_send_attachment,
     build_group_send_text,
 )
 
@@ -77,6 +80,18 @@ def capabilities() -> dict[str, object]:
     }
 
 
+def attachment() -> AttachmentRef:
+    digest = base64.urlsafe_b64encode(hashlib.sha256(b"payload").digest()).rstrip(b"=").decode()
+    return AttachmentRef(
+        "att-fixture",
+        "https://objects.example.test/object-1",
+        "group.txt",
+        "text/plain",
+        7,
+        digest,
+    )
+
+
 def test_group_builders_are_plain_closed_and_deterministic() -> None:
     identity, _ = contexts()
     create_pending = pending("group.create", SERVICE_DID)
@@ -95,6 +110,15 @@ def test_group_builders_are_plain_closed_and_deterministic() -> None:
     assert send["meta"]["content_type"] == "text/plain"
     assert send["body"] == {"text": "hello"}
     assert "e2ee" not in json.dumps({"create": create, "add": add, "send": send}).lower()
+
+    attachment_pending = pending("group.attachment.send", GROUP_DID, message=True)
+    attachment_send = build_group_send_attachment(
+        identity, GROUP_DID, attachment(), "group file", attachment_pending
+    )
+    assert attachment_send["meta"]["content_type"] == ("application/anp-attachment-manifest+json")
+    assert attachment_send["body"]["payload"]["attachments"][0]["encryption_info"] == {
+        "mode": "none"
+    }
 
 
 def test_group_local_builders_preserve_cursor_and_since_seq() -> None:
@@ -231,18 +255,34 @@ async def test_group_reads_filter_non_plain_messages_and_validate_pages() -> Non
                         "sent_at": "now",
                     },
                     {
+                        "message_id": "attachment",
+                        "group_did": GROUP_DID,
+                        "sender_did": identity.identity.did,
+                        "type": "attachment_manifest",
+                        "content": build_group_send_attachment(
+                            contexts()[0],
+                            GROUP_DID,
+                            attachment(),
+                            None,
+                            pending("group.attachment.send", GROUP_DID, message=True),
+                        )["body"]["payload"],
+                        "content_type": "application/anp-attachment-manifest+json",
+                        "group_event_seq": "4",
+                        "sent_at": "now",
+                    },
+                    {
                         "message_id": "cipher",
                         "group_did": GROUP_DID,
                         "sender_did": identity.identity.did,
                         "type": "group_e2ee_cipher",
                         "content": {},
                         "content_type": "application/json",
-                        "group_event_seq": "4",
+                        "group_event_seq": "5",
                     },
                 ],
                 "total": 2,
                 "has_more": False,
-                "next_since_seq": 4,
+                "next_since_seq": 5,
             }
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
 
@@ -254,8 +294,8 @@ async def test_group_reads_filter_non_plain_messages_and_validate_pages() -> Non
         members, _ = await service.members(identity, GROUP_DID, 20)
         assert members[0].role == "owner"
         messages, next_seq = await service.messages(identity, GROUP_DID, 20)
-        assert [message.message_id for message in messages] == ["plain"]
-        assert next_seq == 4
+        assert [message.message_id for message in messages] == ["plain", "attachment"]
+        assert next_seq == 5
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ import typer
 from awiki_lite_cli.application.groups import GroupWorkflow
 from awiki_lite_cli.config import Settings
 from awiki_lite_cli.domain.models import GroupMember, GroupMessage, GroupSummary
+from awiki_lite_cli.infrastructure.attachment_manifest import parse_manifest
 from awiki_lite_cli.infrastructure.group_service import GroupService
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
@@ -156,7 +157,10 @@ def _render_messages(messages: list[GroupMessage]) -> None:
         if message.message_type == "text":
             typer.echo(f"[{message.group_event_seq}] {message.sender_did}: {message.content}")
         else:
+            attachment, caption = parse_manifest(message.content)
+            suffix = f" caption={caption}" if caption else ""
             typer.echo(
                 f"[{message.group_event_seq}] {message.sender_did}: [attachment] "
-                f"{message.message_id}"
+                f"{attachment.filename} id={attachment.attachment_id} "
+                f"message={message.message_id}{suffix}"
             )

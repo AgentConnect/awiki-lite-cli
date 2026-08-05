@@ -19,12 +19,12 @@ from urllib.parse import urlsplit
 import httpx
 
 from awiki_lite_cli.domain.models import AttachmentRef, AuthenticatedIdentity, UnlockedIdentity
+from awiki_lite_cli.infrastructure.attachment_manifest import MANIFEST_CONTENT_TYPE
 from awiki_lite_cli.infrastructure.message_service import build_capabilities, validate_did
 from awiki_lite_cli.infrastructure.rpc import call_json_rpc
 
 ATTACHMENT_PROFILE = "anp.attachment.v1"
 TRANSPORT_PROTECTED = "transport-protected"
-MANIFEST_CONTENT_TYPE = "application/anp-attachment-manifest+json"
 UPLOAD_HEADER_ALLOWLIST = frozenset({"x-awiki-upload-token"})
 CHUNK_SIZE = 64 * 1024
 
@@ -142,7 +142,12 @@ def prepare_file(path: Path, max_bytes: int) -> PreparedFile:
         if total != opened.st_size or _fingerprint(os.fstat(fd)) != fingerprint:
             raise RuntimeError("attachment file changed while it was hashed")
         filename = path.name
-        if not filename or len(filename.encode()) > 255 or "\x00" in filename:
+        if (
+            not filename
+            or len(filename.encode()) > 255
+            or "\x00" in filename
+            or any(ord(character) < 32 or ord(character) == 127 for character in filename)
+        ):
             raise ValueError("attachment filename is invalid")
         mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         encoded = base64.urlsafe_b64encode(digest.digest()).rstrip(b"=").decode("ascii")

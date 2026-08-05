@@ -251,7 +251,7 @@ uv run python scripts/remote_group_attachment_e2e.py --target awiki-info-testing
 | 03 群 adapter | done | capability gate、Group Base proof builders、标准结果与 local view parser | focused group/ANP/direct regression pytest 12 passed；mypy/ruff 通过 |
 | 04 群工作流 | done | create/list/info/members/add/send/messages CLI 与 exact-retry workflow | focused group/CLI/direct regression pytest 18 passed；mypy/ruff 通过 |
 | 05 附件上传 | done | 单 fd 文件快照、P7 v1 control、受限 HTTPS 流式 PUT、best-effort abort | focused attachment/contract/state/group/direct pytest 38 passed；mypy/ruff 通过 |
-| 06 附件消息 | pending | Direct/Group Manifest send/read | 待执行 |
+| 06 附件消息 | done | 单附件 Manifest、Direct/Group send、三阶段恢复、认证投影 context | focused attachment/group/direct/CLI regression pytest 64 passed；mypy/ruff 通过 |
 | 07 附件下载 | pending | ticket + verified atomic download | 待执行 |
 | 08 发布门禁 | pending | 文档、build、远程 E2E | 待执行 |
 

@@ -261,10 +261,13 @@ class SecureStateStore:
         *,
         needs_message_id: bool,
         values: Mapping[str, str] | None = None,
+        initial_stage: str | None = None,
     ) -> PendingOperation:
         """Create or resume one versioned, non-secret idempotent operation."""
         normalized_values = dict(values or {})
         self._validate_pending_input(kind, target_did, input_sha256, normalized_values)
+        if initial_stage is not None and initial_stage != "prepared":
+            raise StateError("pending operation initial stage is invalid")
         path = self.root / "pending-send.json"
         with self.lock():
             if path.exists() or path.is_symlink():
@@ -275,6 +278,7 @@ class SecureStateStore:
                     or pending.input_sha256 != input_sha256
                     or pending.values != normalized_values
                     or (pending.message_id is not None) != needs_message_id
+                    or (initial_stage is None) != (pending.stage is None)
                 ):
                     raise PendingOperationError(
                         "another operation has an unknown result; retry the exact same command"
@@ -291,6 +295,7 @@ class SecureStateStore:
                 proof_created=int(time.time()),
                 proof_nonce=secrets.token_urlsafe(12),
                 values=normalized_values,
+                stage=initial_stage,
             )
             self._atomic_json(path, self._pending_operation_json(pending))
             return pending
@@ -322,6 +327,32 @@ class SecureStateStore:
                 path.unlink()
                 self._fsync_directory(path.parent)
 
+    def advance_operation(self, pending: PendingOperation, next_stage: str) -> PendingOperation:
+        """Atomically advance the non-secret attachment lifecycle marker."""
+        transitions = {"prepared": "uploaded", "uploaded": "committed"}
+        if pending.stage not in transitions or transitions[pending.stage] != next_stage:
+            raise PendingOperationError("pending operation stage transition is invalid")
+        path = self.root / "pending-send.json"
+        with self.lock():
+            current = self._parse_pending_operation(self._read_json(path))
+            if current != pending:
+                raise PendingOperationError("pending operation state changed unexpectedly")
+            advanced = PendingOperation(
+                schema_version=pending.schema_version,
+                kind=pending.kind,
+                target_did=pending.target_did,
+                input_sha256=pending.input_sha256,
+                operation_id=pending.operation_id,
+                message_id=pending.message_id,
+                created_at=pending.created_at,
+                proof_created=pending.proof_created,
+                proof_nonce=pending.proof_nonce,
+                values=pending.values,
+                stage=next_stage,
+            )
+            self._atomic_json(path, self._pending_operation_json(advanced))
+            return advanced
+
     @staticmethod
     def _parse_pending_operation(data: Mapping[str, Any]) -> PendingOperation:
         schema_version = data.get("schema_version")
@@ -346,6 +377,8 @@ class SecureStateStore:
             ):
                 raise TypeError
             values = dict(raw_values)
+            raw_stage = data.get("stage")
+            stage = str(raw_stage) if raw_stage is not None else None
         except (KeyError, TypeError, ValueError) as exc:
             raise StateError("pending operation state is invalid") from exc
         SecureStateStore._validate_pending_input(kind, target_did, input_sha256, values)
@@ -353,6 +386,8 @@ class SecureStateStore:
             raise StateError("pending operation state is invalid")
         if message_id is not None and not message_id:
             raise StateError("pending operation state is invalid")
+        if stage not in {None, "prepared", "uploaded", "committed"}:
+            raise StateError("pending operation stage is invalid")
         return PendingOperation(
             schema_version=PENDING_SCHEMA_VERSION,
             kind=kind,
@@ -364,6 +399,7 @@ class SecureStateStore:
             proof_created=proof_created,
             proof_nonce=proof_nonce,
             values=values,
+            stage=stage,
         )
 
     @staticmethod
@@ -431,6 +467,7 @@ class SecureStateStore:
             "proof_created": pending.proof_created,
             "proof_nonce": pending.proof_nonce,
             "values": pending.values,
+            "stage": pending.stage,
         }
 
     @staticmethod

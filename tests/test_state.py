@@ -10,6 +10,7 @@ from awiki_lite_cli.domain.models import AttachmentContext, AttachmentRef, Ident
 from awiki_lite_cli.infrastructure.state import (
     IdentityExistsError,
     InvalidPassphraseError,
+    PendingOperationError,
     SecureStateStore,
     StateError,
 )
@@ -179,6 +180,35 @@ def test_versioned_operation_blocks_different_work_and_reuses_exact_state(tmp_pa
             needs_message_id=False,
         )
     store.complete_operation(first)
+
+
+def test_staged_operation_advances_atomically_and_resumes_current_stage(tmp_path: Path) -> None:
+    store = SecureStateStore(tmp_path / "state")
+    digest = "a" * 64
+    prepared = store.prepare_operation(
+        "direct.attachment.send",
+        "did:wba:example.test:user:bob",
+        digest,
+        needs_message_id=True,
+        values={"attachment_id": "att-stable"},
+        initial_stage="prepared",
+    )
+    uploaded = store.advance_operation(prepared, "uploaded")
+    assert uploaded.stage == "uploaded"
+    resumed = SecureStateStore(store.root).prepare_operation(
+        "direct.attachment.send",
+        "did:wba:example.test:user:bob",
+        digest,
+        needs_message_id=True,
+        values={"attachment_id": "att-stable"},
+        initial_stage="prepared",
+    )
+    assert resumed == uploaded
+    committed = store.advance_operation(resumed, "committed")
+    assert committed.stage == "committed"
+    with pytest.raises(PendingOperationError, match="transition"):
+        store.advance_operation(committed, "uploaded")
+    store.complete_operation(committed)
 
 
 def test_pending_operation_rejects_secret_fields_and_unknown_schema(tmp_path: Path) -> None:
