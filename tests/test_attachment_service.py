@@ -73,7 +73,7 @@ async def test_plain_attachment_create_upload_commit_exact_contract(tmp_path: Pa
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "PUT":
             assert str(request.url) == "https://objects.example.test/objects/upload/slot-1"
-            assert request.headers["x-awiki-upload-token"] == "upload-secret"
+            assert request.headers["x-anp-upload-token"] == "upload-secret"
             assert request.content == raw
             return httpx.Response(204)
         body = json.loads(request.content)
@@ -85,7 +85,7 @@ async def test_plain_attachment_create_upload_commit_exact_contract(tmp_path: Pa
                 "attachment_id": "att-1",
                 "slot_id": "slot-1",
                 "upload_uri": "https://objects.example.test/objects/upload/slot-1",
-                "upload_headers": {"X-AWiki-Upload-Token": "upload-secret"},
+                "upload_headers": {"X-ANP-Upload-Token": "upload-secret"},
                 "object_uri": "https://objects.example.test/objects/object-1",
                 "commit_token": "commit-secret",
                 "expires_at": "2099-08-06T00:05:00Z",
@@ -170,11 +170,11 @@ def test_prepare_file_accepts_empty_and_rejects_unsafe_or_changed_files(tmp_path
 @pytest.mark.parametrize(
     ("upload_uri", "headers"),
     [
-        ("http://objects.example.test/upload", {"X-AWiki-Upload-Token": "secret"}),
-        ("https://127.0.0.1/upload", {"X-AWiki-Upload-Token": "secret"}),
-        ("https://objects.example.test/upload?secret=x", {"X-AWiki-Upload-Token": "secret"}),
+        ("http://objects.example.test/upload", {"X-ANP-Upload-Token": "secret"}),
+        ("https://127.0.0.1/upload", {"X-ANP-Upload-Token": "secret"}),
+        ("https://objects.example.test/upload?secret=x", {"X-ANP-Upload-Token": "secret"}),
         ("https://objects.example.test/upload", {"Authorization": "secret"}),
-        ("https://objects.example.test/upload", {"X-AWiki-Upload-Token": "bad\r\nvalue"}),
+        ("https://objects.example.test/upload", {"X-ANP-Upload-Token": "bad\r\nvalue"}),
     ],
 )
 async def test_create_slot_rejects_unsafe_data_plane_values(
@@ -258,7 +258,7 @@ async def test_control_transport_retry_reuses_exact_params(tmp_path: Path) -> No
             "attachment_id": "att-1",
             "slot_id": "slot-1",
             "upload_uri": "https://objects.example.test/upload/slot-1",
-            "upload_headers": {"X-AWiki-Upload-Token": "upload-secret"},
+            "upload_headers": {"X-ANP-Upload-Token": "upload-secret"},
             "object_uri": "https://objects.example.test/object-1",
             "commit_token": "commit-secret",
             "expires_at": "2099-08-06T00:05:00Z",
@@ -311,7 +311,7 @@ async def test_upload_redirect_and_commit_mismatch_fail_closed(tmp_path: Path) -
         "att-1",
         "slot-1",
         "https://objects.example.test/upload/slot-1",
-        {"x-awiki-upload-token": "upload-secret"},
+        {"x-anp-upload-token": "upload-secret"},
         "https://objects.example.test/object-1",
         "commit-secret",
         "2099-08-06T00:05:00Z",
@@ -345,7 +345,7 @@ async def test_expired_upload_slot_is_rejected_before_network(tmp_path: Path) ->
         "att-1",
         "slot-1",
         "https://objects.example.test/upload/slot-1",
-        {"x-awiki-upload-token": "upload-secret"},
+        {"x-anp-upload-token": "upload-secret"},
         "https://objects.example.test/object-1",
         "commit-secret",
         "2000-01-01T00:00:00Z",
@@ -356,3 +356,26 @@ async def test_expired_upload_slot_is_rejected_before_network(tmp_path: Path) ->
                 await AttachmentService(client, "https://message.example.test").upload(
                     slot, prepared
                 )
+
+
+@pytest.mark.asyncio
+async def test_rfc3339_nanosecond_slot_expiry_is_accepted(tmp_path: Path) -> None:
+    path = tmp_path / "safe.bin"
+    path.write_bytes(b"safe")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "PUT"
+        return httpx.Response(204)
+
+    slot = AttachmentSlot(
+        "att-1",
+        "slot-1",
+        "https://objects.example.test/upload/slot-1",
+        {"x-anp-upload-token": "upload-secret"},
+        "https://objects.example.test/object-1",
+        "commit-secret",
+        "2099-08-06T00:05:00.460325270Z",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with prepare_file(path, 100) as prepared:
+            await AttachmentService(client, "https://message.example.test").upload(slot, prepared)

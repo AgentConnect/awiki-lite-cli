@@ -1,5 +1,5 @@
 {
-  "client_version": "awiki-cli/0714/0.1.0",
+  "client_version": "awiki-cli/0714/0.2.0",
   "otp": {
     "method": "send_otp",
     "params": {

@@ -7,6 +7,7 @@ import hashlib
 import ipaddress
 import mimetypes
 import os
+import re
 import stat
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
@@ -32,7 +33,7 @@ from awiki_lite_cli.infrastructure.rpc import call_json_rpc
 
 ATTACHMENT_PROFILE = "anp.attachment.v1"
 TRANSPORT_PROTECTED = "transport-protected"
-UPLOAD_HEADER_ALLOWLIST = frozenset({"x-awiki-upload-token"})
+UPLOAD_HEADER_ALLOWLIST = frozenset({"x-anp-upload-token"})
 CHUNK_SIZE = 64 * 1024
 
 
@@ -738,8 +739,18 @@ def _nonempty(value: Any, field_name: str) -> str:
 
 
 def _require_unexpired(value: str, subject: str = "attachment upload slot") -> None:
+    matched = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})",
+        value,
+    )
+    if matched is None:
+        raise RuntimeError("attachment service returned an invalid expires_at")
+    fraction = matched.group(2) or ""
+    if fraction:
+        fraction = fraction[:7]
+    normalized = matched.group(1) + fraction + matched.group(3).replace("Z", "+00:00")
     try:
-        expires_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        expires_at = datetime.fromisoformat(normalized)
     except ValueError as exc:
         raise RuntimeError("attachment service returned an invalid expires_at") from exc
     if expires_at.tzinfo is None or expires_at <= datetime.now(timezone.utc):

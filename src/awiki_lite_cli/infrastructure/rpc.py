@@ -27,7 +27,7 @@ async def call_json_rpc(
     params: dict[str, Any],
     *,
     access_token: str | None = None,
-    client_version: str = "awiki-cli/0714/0.1.0",
+    client_version: str = "awiki-cli/0714/0.2.0",
 ) -> Any:
     """Call one RPC method and preserve service error codes without leaking credentials."""
     headers = {"Content-Type": "application/json", "X-AWiki-Client-Version": client_version}
