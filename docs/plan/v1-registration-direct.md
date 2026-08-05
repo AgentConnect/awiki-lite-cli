@@ -1,6 +1,6 @@
 # AWiki Lite CLI 首个版本实施 Plan（注册 + 私聊）
 
-状态：Blocked（仅缺少两个可用远程测试身份/OTP，代码与本地门禁已完成）
+状态：Blocked（远程 peer OTP operator 权限不可用，代码与本地门禁已完成）
 
 创建日期：2026-08-05
 
@@ -292,8 +292,11 @@ uv build
 
 本次执行证据（2026-08-05）：本地 Ruff format/check、mypy、26 个 pytest 和 `uv build`
 全部通过；对 `https://awiki.info/user-service/handle/rpc` 的无副作用 `validate` probe 证实
-`awiki-cli/0714/0.1.0` header 被当前部署接受。真实注册和双身份消息 E2E 未执行，因为当前
-工作区没有两套获授权的手机号/OTP；不得用 fixture 或服务端代码测试替代这项发布门禁。
+`awiki-cli/0714/0.1.0` header 被当前部署接受。真实单身份注册已通过。双身份 E2E 的第二
+身份需要受控 peer OTP operator；当前执行用户无权读取 operator 指定的
+`/etc/awiki/user-service.env`，真实短信通道也不可用，因此在注册 B 前停止。测试创建的专用
+账号已通过 system-test cleanup 清理，本地加密临时状态已移入回收站。不得用 fixture、错误
+OTP 或缺少 fail-fast 的 shell 输出替代这项发布门禁。
 
 ## 11. 完成定义
 
@@ -323,6 +326,6 @@ uv build
 | 05 Direct 契约 | done | Bearer、plain payload/read builders、error boundary | `tests/test_message_service.py` |
 | 06 私聊发送 | done | `dm send` 与同 ID 网络重试 | `tests/test_message_workflows.py` |
 | 07 私聊读取 | done | inbox/显式 mark-read/history 与 E2EE 过滤 | `tests/test_message_workflows.py` |
-| 08 发布门禁 | blocked | README、build 与本地门禁已完成 | 缺少两个真实远程身份/手机号 OTP，尚未声称远程 E2E 通过 |
+| 08 发布门禁 | blocked | README、build、本地门禁和远程 A 注册已完成 | peer OTP operator 权限不可用；A↔B 消息 E2E 未执行，未声称通过 |
 
 执行期间若需要改变范围、公开命令、协议 profile、状态格式或验收标准，必须先更新本 Plan，再开始对应编码。群聊和附件必须创建独立的后续版本 Plan，不得追加到本版本中。
