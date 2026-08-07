@@ -21,6 +21,11 @@ from awiki_lite_cli.infrastructure.attachment_service import (
 )
 from awiki_lite_cli.infrastructure.state import SecureStateStore
 
+
+async def public_dns(_hostname: str, _port: int) -> list[str]:
+    return ["93.184.216.34"]
+
+
 SERVICE_DID = "did:wba:message.example.test"
 TARGET_DID = "did:wba:example.test:user:bob:e1_fixture"
 
@@ -72,7 +77,9 @@ async def test_plain_attachment_create_upload_commit_exact_contract(tmp_path: Pa
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "PUT":
-            assert str(request.url) == "https://objects.example.test/objects/upload/slot-1"
+            assert str(request.url) == "https://93.184.216.34/objects/upload/slot-1"
+            assert request.headers["host"] == "objects.example.test"
+            assert request.extensions["sni_hostname"] == "objects.example.test"
             assert request.headers["x-anp-upload-token"] == "upload-secret"
             assert request.content == raw
             return httpx.Response(204)
@@ -102,7 +109,9 @@ async def test_plain_attachment_create_upload_commit_exact_contract(tmp_path: Pa
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler), follow_redirects=False
     ) as client:
-        service = AttachmentService(client, "https://message.example.test")
+        service = AttachmentService(
+            client, "https://message.example.test", address_resolver=public_dns
+        )
         capabilities = await service.capabilities(identity)
         with prepare_file(path, capabilities.max_object_bytes) as prepared:
             slot = await service.create_slot(
@@ -319,7 +328,9 @@ async def test_upload_redirect_and_commit_mismatch_fail_closed(tmp_path: Path) -
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler), follow_redirects=True
     ) as client:
-        service = AttachmentService(client, "https://message.example.test")
+        service = AttachmentService(
+            client, "https://message.example.test", address_resolver=public_dns
+        )
         with prepare_file(path, 100) as prepared:
             with pytest.raises(httpx.HTTPStatusError):
                 await service.upload(slot, prepared)
@@ -353,9 +364,9 @@ async def test_expired_upload_slot_is_rejected_before_network(tmp_path: Path) ->
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with prepare_file(path, 100) as prepared:
             with pytest.raises(RuntimeError, match="expired"):
-                await AttachmentService(client, "https://message.example.test").upload(
-                    slot, prepared
-                )
+                await AttachmentService(
+                    client, "https://message.example.test", address_resolver=public_dns
+                ).upload(slot, prepared)
 
 
 @pytest.mark.asyncio
@@ -378,4 +389,6 @@ async def test_rfc3339_nanosecond_slot_expiry_is_accepted(tmp_path: Path) -> Non
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with prepare_file(path, 100) as prepared:
-            await AttachmentService(client, "https://message.example.test").upload(slot, prepared)
+            await AttachmentService(
+                client, "https://message.example.test", address_resolver=public_dns
+            ).upload(slot, prepared)

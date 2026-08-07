@@ -9,6 +9,7 @@ import typer
 
 from awiki_lite_cli.application.registration import RegistrationWorkflow
 from awiki_lite_cli.config import Settings
+from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
 from awiki_lite_cli.infrastructure.user_service import UserService
@@ -45,6 +46,7 @@ async def _register(handle: str, phone: str):  # type: ignore[no-untyped-def]
             UserService(client, settings.user_service_url),
             SecureStateStore(settings.state_dir),
             settings.message_service_url,
+            generate_identity,
         )
         canonical_handle, canonical_phone, domain = await workflow.begin(handle, phone)
         otp = typer.prompt("OTP", hide_input=True)

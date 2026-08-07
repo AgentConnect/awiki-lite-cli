@@ -2,22 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
 from typing import Any
 from uuid import uuid4
 
 import httpx
 
+from awiki_lite_cli import CLIENT_IDENTIFIER
+from awiki_lite_cli.application.errors import JsonRpcFailure, ProtocolResponseError
 
-@dataclass(frozen=True, slots=True)
-class JsonRpcFailure(RuntimeError):
-    code: int
-    message: str
-    data: Any = None
-
-    def __str__(self) -> str:
-        # A remote error could reflect credentials or signed payload fields.
-        return f"JSON-RPC request failed with code {self.code}"
+__all__ = [
+    "JsonRpcFailure",
+    "ProtocolResponseError",
+    "call_json_rpc",
+    "decode_json_rpc_response",
+    "encode_json_rpc_request",
+]
 
 
 async def call_json_rpc(
@@ -27,7 +27,7 @@ async def call_json_rpc(
     params: dict[str, Any],
     *,
     access_token: str | None = None,
-    client_version: str = "awiki-cli/0714/0.2.0",
+    client_version: str = CLIENT_IDENTIFIER,
 ) -> Any:
     """Call one RPC method and preserve service error codes without leaking credentials."""
     headers = {"Content-Type": "application/json", "X-AWiki-Client-Version": client_version}
@@ -39,19 +39,44 @@ async def call_json_rpc(
         headers=headers,
         json={"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
     )
+    return decode_json_rpc_response(response, request_id)
+
+
+def encode_json_rpc_request(request_id: str, method: str, params: dict[str, Any]) -> bytes:
+    """Encode the exact bytes used by a signed JSON-RPC request."""
+    return json.dumps(
+        {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+        separators=(",", ":"),
+    ).encode()
+
+
+def decode_json_rpc_response(response: httpx.Response, request_id: str) -> Any:
+    """Validate one response against its request identifier."""
     try:
         payload = response.json()
     except ValueError:
         response.raise_for_status()
         raise RuntimeError("service returned a non-JSON response") from None
-    if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
+    if not isinstance(payload, dict):
+        raise ProtocolResponseError("service returned an invalid JSON-RPC response")
+    if payload.get("jsonrpc") != "2.0" or payload.get("id") != request_id:
+        raise ProtocolResponseError("service returned an invalid JSON-RPC envelope")
+    has_error = "error" in payload
+    has_result = "result" in payload
+    if has_error == has_result:
+        raise ProtocolResponseError("service returned an ambiguous JSON-RPC response")
+    if has_error:
         error = payload["error"]
+        if not isinstance(error, dict):
+            raise ProtocolResponseError("service returned an invalid JSON-RPC error")
+        code = error.get("code")
+        message = error.get("message")
+        if not isinstance(code, int) or isinstance(code, bool) or not isinstance(message, str):
+            raise ProtocolResponseError("service returned an invalid JSON-RPC error")
         raise JsonRpcFailure(
-            code=int(error.get("code", -32603)),
-            message=str(error.get("message", "Unknown JSON-RPC error")),
+            code=code,
+            message=message,
             data=error.get("data"),
         )
     response.raise_for_status()
-    if not isinstance(payload, dict) or payload.get("id") != request_id or "result" not in payload:
-        raise RuntimeError("service returned an invalid JSON-RPC response")
     return payload["result"]

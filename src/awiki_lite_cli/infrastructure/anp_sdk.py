@@ -11,6 +11,7 @@ from importlib.metadata import version
 from typing import Any
 from urllib.parse import urlsplit
 
+import httpx
 from anp.authentication import (  # type: ignore[import-untyped]
     PROFILE_CORE_BINDING_V1,
     PROFILE_DIRECT_BASE_V1,
@@ -21,16 +22,32 @@ from anp.authentication import (  # type: ignore[import-untyped]
     DeviceManifestEntry,
     build_vnext_did_document,
     create_did_wba_document,
-    resolve_did_document,
     validate_device_manifest,
+)
+from anp.authentication.did_resolver import (  # type: ignore[import-untyped]
+    build_did_resolution_url,
+)
+from anp.authentication.did_wba import (  # type: ignore[import-untyped]
+    _extract_public_key,
+    _find_verification_method,
+    validate_did_document_binding,
 )
 from anp.proof import (  # type: ignore[import-untyped]
     Rfc9421OriginProofGenerationOptions,
     generate_rfc9421_origin_proof,
     generate_w3c_proof,
+    verify_w3c_proof,
 )
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
+
+from awiki_lite_cli.infrastructure.safe_network import (
+    AddressResolver,
+    pin_https_url,
+    pinned_headers,
+    resolve_public_addresses,
+)
+from awiki_lite_cli.infrastructure.validation import validate_wba_did
 
 CANONICAL_MANIFEST_PROFILES = (
     PROFILE_CORE_BINDING_V1,
@@ -168,14 +185,55 @@ def generate_origin_proof(
     )
 
 
-async def resolve_attachment_service_did(sender_did: str) -> str:
+async def resolve_attachment_service_did(
+    sender_did: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+    address_resolver: AddressResolver = resolve_public_addresses,
+) -> str:
     """Resolve and proof-check the sender's compatible ANPMessageService serviceDid."""
-    _validate_public_wba_did(sender_did)
+    validate_wba_did(sender_did, field="attachment sender DID")
+    resolution_url = build_did_resolution_url(sender_did)
     try:
-        document = await resolve_did_document(sender_did, verify_proof=True)
+        target = await pin_https_url(
+            resolution_url,
+            resolver=address_resolver,
+            field="attachment sender DID URL",
+        )
+        owns_client = client is None
+        active_client = client or httpx.AsyncClient(timeout=10.0, trust_env=False)
+        try:
+            response = await active_client.get(
+                target.url,
+                headers=pinned_headers(target, {"Accept": "application/json"}),
+                follow_redirects=False,
+                extensions=target.extensions,
+            )
+            response.raise_for_status()
+            document = response.json()
+        finally:
+            if owns_client:
+                await active_client.aclose()
+        _verify_resolved_document(sender_did, document)
     except Exception:
         raise RuntimeError("unable to resolve the attachment sender DID document") from None
     return select_attachment_service_did(sender_did, document)
+
+
+def _verify_resolved_document(sender_did: str, document: Any) -> None:
+    if not isinstance(document, dict) or document.get("id") != sender_did:
+        raise ValueError("DID document ID mismatch")
+    if not validate_did_document_binding(document, verify_proof=True):
+        raise ValueError("DID document binding verification failed")
+    proof = document.get("proof")
+    if not isinstance(proof, dict):
+        raise ValueError("DID document proof is missing")
+    method_id = proof.get("verificationMethod")
+    if not isinstance(method_id, str) or not method_id:
+        raise ValueError("DID document proof method is missing")
+    method = _find_verification_method(document, method_id)
+    if not method or not verify_w3c_proof(document, _extract_public_key(method)):
+        raise ValueError("DID document proof verification failed")
 
 
 def select_attachment_service_did(sender_did: str, document: Mapping[str, Any]) -> str:
@@ -211,24 +269,6 @@ def select_attachment_service_did(sender_did: str, document: Mapping[str, Any]) 
         raise RuntimeError("attachment sender DID document has no compatible service")
     candidates.sort()
     return candidates[0][2]
-
-
-def _validate_public_wba_did(value: str) -> None:
-    import ipaddress
-    from urllib.parse import unquote
-
-    parts = value.split(":")
-    if len(parts) < 3 or parts[:2] != ["did", "wba"]:
-        raise RuntimeError("attachment sender DID is invalid")
-    hostname = unquote(parts[2]).lower().rstrip(".")
-    if not hostname or hostname == "localhost" or hostname.endswith(".localhost"):
-        raise RuntimeError("attachment sender DID is unsafe to resolve")
-    try:
-        address = ipaddress.ip_address(hostname)
-    except ValueError:
-        return
-    if not address.is_global:
-        raise RuntimeError("attachment sender DID is unsafe to resolve")
 
 
 def _default_service_did(message_service_url: str) -> str:

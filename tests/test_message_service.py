@@ -23,6 +23,7 @@ from awiki_lite_cli.infrastructure.message_service import (
     build_inbox,
     build_mark_read,
 )
+from awiki_lite_cli.infrastructure.rpc import ProtocolResponseError
 
 
 def unlocked() -> UnlockedIdentity:
@@ -193,3 +194,51 @@ async def test_direct_inbox_projects_valid_plain_attachment() -> None:
         messages, _ = await MessageService(client, "https://example.test").inbox(authenticated, 20)
     assert messages[0].attachments == (attachment(),)
     assert messages[0].caption == "report"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message,has_more",
+    [
+        (
+            {
+                "sender_did": "did:wba:example.test:user:alice",
+                "receiver_did": "did:wba:example.test:user:bob",
+                "type": "text",
+                "content_type": "text/plain",
+                "content": "missing id",
+            },
+            False,
+        ),
+        (
+            {
+                "id": "msg",
+                "sender_did": "did:wba:example.test:user:alice",
+                "receiver_did": "did:wba:example.test:user:bob",
+                "type": "text",
+                "content_type": "text/plain",
+                "content": {"not": "text"},
+                "is_read": "false",
+            },
+            "false",
+        ),
+    ],
+)
+async def test_direct_inbox_rejects_malformed_remote_shapes(message, has_more) -> None:  # type: ignore[no-untyped-def]
+    identity = unlocked()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {"messages": [message], "has_more": has_more},
+            },
+        )
+
+    authenticated = AuthenticatedIdentity(identity.identity, identity.session)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProtocolResponseError):
+            await MessageService(client, "https://example.test").inbox(authenticated, 20)

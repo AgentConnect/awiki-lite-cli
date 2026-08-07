@@ -7,12 +7,23 @@ import pytest
 from awiki_lite_cli.application.attachments import AttachmentWorkflow
 from awiki_lite_cli.domain.models import IdentityState
 from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
-from awiki_lite_cli.infrastructure.attachment_service import AttachmentService
+from awiki_lite_cli.infrastructure.attachment_manifest import normalize_caption
+from awiki_lite_cli.infrastructure.attachment_service import (
+    AttachmentService,
+    prepare_download_destination,
+    prepare_file,
+)
 from awiki_lite_cli.infrastructure.group_service import GroupService
 from awiki_lite_cli.infrastructure.message_service import MessageService
 from awiki_lite_cli.infrastructure.state import SecureStateStore
 
 SERVICE_DID = "did:wba:message.example.test"
+
+
+async def public_dns(_hostname: str, _port: int) -> list[str]:
+    return ["93.184.216.34"]
+
+
 RECIPIENT_DID = "did:wba:example.test:user:bob:e1_fixture"
 GROUP_DID = "did:wba:groups.example.test:group:fixture:e1_group"
 
@@ -56,10 +67,13 @@ def capabilities() -> dict[str, object]:
 
 def workflow(client: httpx.AsyncClient, store: SecureStateStore) -> AttachmentWorkflow:
     return AttachmentWorkflow(
-        AttachmentService(client, "https://message.example.test"),
+        AttachmentService(client, "https://message.example.test", address_resolver=public_dns),
         MessageService(client, "https://message.example.test"),
         GroupService(client, "https://message.example.test"),
         store,
+        normalize_caption,
+        prepare_file,
+        prepare_download_destination,
     )
 
 

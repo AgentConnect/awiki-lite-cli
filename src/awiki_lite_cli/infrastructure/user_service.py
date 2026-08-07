@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 import httpx
+from anp.authentication import generate_http_signature_headers  # type: ignore[import-untyped]
 
-from awiki_lite_cli.infrastructure.rpc import call_json_rpc
+from awiki_lite_cli import CLIENT_IDENTIFIER
+from awiki_lite_cli.domain.models import IdentityState
+from awiki_lite_cli.infrastructure.rpc import (
+    call_json_rpc,
+    decode_json_rpc_response,
+    encode_json_rpc_request,
+)
 
 
 class UserService:
@@ -52,6 +60,42 @@ class UserService:
             },
         )
         return _object(result)
+
+    async def refresh_session(self, identity: IdentityState, signing_key: Any) -> str:
+        """Obtain a bearer token with DID HTTP signatures, not the old bearer token."""
+        endpoint = self.base_url + "/user-service/did-auth/rpc"
+        request_id = str(uuid4())
+        body = encode_json_rpc_request(request_id, "get_me", {})
+        headers = {
+            "Content-Type": "application/json",
+            "X-AWiki-Client-Version": CLIENT_IDENTIFIER,
+        }
+
+        def sign(payload: bytes, _algorithm: str) -> bytes:
+            return bytes(signing_key.sign(payload))
+
+        headers.update(
+            generate_http_signature_headers(
+                identity.did_document,
+                endpoint,
+                "POST",
+                sign,
+                headers=headers,
+                body=body,
+                keyid=identity.verification_method,
+            )
+        )
+        result = _object(
+            decode_json_rpc_response(
+                await self.client.post(endpoint, headers=headers, content=body), request_id
+            )
+        )
+        token = result.get("access_token")
+        if not isinstance(token, str) or not token.strip():
+            raise RuntimeError("DID authentication returned no access token")
+        if result.get("did") is not None and result.get("did") != identity.did:
+            raise RuntimeError("DID authentication returned a mismatched identity")
+        return token
 
 
 def _object(value: Any) -> dict[str, Any]:

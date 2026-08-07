@@ -13,7 +13,7 @@ def test_root_help_exposes_only_implemented_capability_groups() -> None:
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
-    for command in ("register", "dm", "group", "attachment"):
+    for command in ("register", "dm", "group", "attachment", "listener", "session"):
         assert command in result.stdout
 
 
@@ -50,6 +50,23 @@ def test_dm_send_requires_registered_identity(monkeypatch, tmp_path) -> None:
 
     assert result.exit_code == 1
     assert "not registered" in result.stderr
+
+
+def test_private_text_input_modes_are_mutually_exclusive() -> None:
+    direct = runner.invoke(
+        app,
+        ["dm", "send", "did:wba:example.com:user:bob", "visible", "--stdin"],
+        input="hidden",
+    )
+    group = runner.invoke(
+        app,
+        ["group", "send", "did:wba:example.com:group:one", "visible", "--stdin"],
+        input="hidden",
+    )
+    assert direct.exit_code == 2
+    assert group.exit_code == 2
+    assert "mutually exclusive" in direct.stderr
+    assert "mutually exclusive" in group.stderr
 
 
 def test_register_input_error_uses_exit_two(monkeypatch) -> None:

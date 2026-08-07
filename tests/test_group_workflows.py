@@ -9,7 +9,7 @@ import pytest
 from awiki_lite_cli.application.groups import GroupWorkflow
 from awiki_lite_cli.domain.models import AttachmentRef, IdentityState
 from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
-from awiki_lite_cli.infrastructure.attachment_manifest import build_manifest
+from awiki_lite_cli.infrastructure.attachment_manifest import build_manifest, parse_manifest
 from awiki_lite_cli.infrastructure.group_service import GroupService
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore
@@ -66,7 +66,9 @@ async def test_group_send_unknown_result_preserves_exact_retry_state(tmp_path: P
         raise httpx.ReadTimeout("unknown result", request=request)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        workflow = GroupWorkflow(GroupService(client, "https://example.test"), store)
+        workflow = GroupWorkflow(
+            GroupService(client, "https://example.test"), store, parse_manifest
+        )
         with pytest.raises(httpx.ReadTimeout):
             await workflow.send(identity, GROUP_DID, "hello")
     assert len(metas) == 2
@@ -96,7 +98,9 @@ async def test_group_explicit_rejection_discards_pending_state(tmp_path: Path) -
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        workflow = GroupWorkflow(GroupService(client, "https://example.test"), store)
+        workflow = GroupWorkflow(
+            GroupService(client, "https://example.test"), store, parse_manifest
+        )
         with pytest.raises(JsonRpcFailure) as caught:
             await workflow.add(identity, GROUP_DID, "did:wba:example.test:user:bob")
     assert caught.value.code == 3403
@@ -111,7 +115,9 @@ async def test_invalid_group_input_does_not_call_network_or_create_pending(tmp_p
         raise AssertionError(f"unexpected network call: {request.url}")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        workflow = GroupWorkflow(GroupService(client, "https://example.test"), store)
+        workflow = GroupWorkflow(
+            GroupService(client, "https://example.test"), store, parse_manifest
+        )
         with pytest.raises(ValueError, match="empty"):
             await workflow.send(identity, GROUP_DID, "   ")
         with pytest.raises(ValueError, match="1-128"):
@@ -156,7 +162,7 @@ async def test_group_messages_persist_only_validated_attachment_context(tmp_path
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         rows, next_seq = await GroupWorkflow(
-            GroupService(client, "https://example.test"), store
+            GroupService(client, "https://example.test"), store, parse_manifest
         ).messages(GROUP_DID, 20, 0)
     assert rows[0].message_id == "message-group-attachment"
     assert next_seq == 3

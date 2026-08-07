@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import ipaddress
 import mimetypes
 import os
 import re
@@ -30,6 +29,17 @@ from awiki_lite_cli.infrastructure.anp_sdk import resolve_attachment_service_did
 from awiki_lite_cli.infrastructure.attachment_manifest import MANIFEST_CONTENT_TYPE
 from awiki_lite_cli.infrastructure.message_service import build_capabilities, validate_did
 from awiki_lite_cli.infrastructure.rpc import call_json_rpc
+from awiki_lite_cli.infrastructure.safe_network import (
+    AddressResolver,
+    pin_https_url,
+    pinned_headers,
+    resolve_public_addresses,
+)
+from awiki_lite_cli.infrastructure.state import (
+    _owned_by_current_user,
+    _secure_open_file,
+)
+from awiki_lite_cli.infrastructure.validation import validate_public_hostname
 
 ATTACHMENT_PROFILE = "anp.attachment.v1"
 TRANSPORT_PROTECTED = "transport-protected"
@@ -69,7 +79,7 @@ class DownloadTicket:
 class DownloadDestination:
     """An owner-controlled directory fd and a no-overwrite basename."""
 
-    def __init__(self, directory: Path, directory_fd: int, filename: str) -> None:
+    def __init__(self, directory: Path, directory_fd: int | None, filename: str) -> None:
         self.directory = directory
         self.directory_fd = directory_fd
         self.filename = filename
@@ -81,7 +91,8 @@ class DownloadDestination:
 
     def close(self) -> None:
         if not self._closed:
-            os.close(self.directory_fd)
+            if self.directory_fd is not None:
+                os.close(self.directory_fd)
             self._closed = True
 
     def __enter__(self) -> DownloadDestination:
@@ -295,10 +306,26 @@ def build_download_ticket(
 def prepare_download_destination(output_dir: Path, filename: str) -> DownloadDestination:
     safe_filename = _safe_filename(filename)
     directory = output_dir.absolute()
+    if os.name == "nt":
+        try:
+            resolved = directory.resolve(strict=True)
+            opened = directory.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise ValueError("attachment output directory is unavailable") from exc
+        if os.path.normcase(resolved) != os.path.normcase(directory) or not stat.S_ISDIR(
+            opened.st_mode
+        ):
+            raise ValueError("attachment output directory must not contain symlinks")
+        if not _owned_by_current_user(directory, opened):
+            raise ValueError("attachment output directory must be owned by the current user")
+        destination = directory / safe_filename
+        if destination.exists() or destination.is_symlink():
+            raise ValueError("attachment output file already exists")
+        return DownloadDestination(directory, None, safe_filename)
     directory_fd = _open_directory_without_symlinks(directory)
     try:
         opened = os.fstat(directory_fd)
-        if not stat.S_ISDIR(opened.st_mode) or opened.st_uid != os.geteuid():
+        if not stat.S_ISDIR(opened.st_mode) or not _owned_by_current_user(directory, opened):
             raise ValueError("attachment output directory must be owned by the current user")
         try:
             os.stat(safe_filename, dir_fd=directory_fd, follow_symlinks=False)
@@ -317,11 +344,20 @@ class AttachmentService:
         self,
         client: httpx.AsyncClient,
         base_url: str,
-        service_resolver: Callable[[str], Awaitable[str]] = resolve_attachment_service_did,
+        service_resolver: Callable[[str], Awaitable[str]] | None = None,
+        address_resolver: AddressResolver = resolve_public_addresses,
     ) -> None:
         self.client = client
         self.endpoint = base_url.rstrip("/") + "/im/rpc"
-        self.service_resolver = service_resolver
+        self.address_resolver = address_resolver
+        self.service_resolver = service_resolver or self._resolve_attachment_service
+
+    async def _resolve_attachment_service(self, sender_did: str) -> str:
+        return await resolve_attachment_service_did(
+            sender_did,
+            client=self.client,
+            address_resolver=self.address_resolver,
+        )
 
     async def capabilities(
         self, identity: AuthenticatedIdentity | UnlockedIdentity
@@ -372,14 +408,18 @@ class AttachmentService:
     async def upload(self, slot: AttachmentSlot, prepared: PreparedFile) -> None:
         _require_unexpired(slot.expires_at)
         uri = _https_uri(slot.upload_uri, "upload_uri")
+        target = await pin_https_url(
+            uri, resolver=self.address_resolver, field="attachment upload URI"
+        )
         headers = _upload_headers(slot.upload_headers)
         prepared.rewind()
         stream = _PreparedFileStream(prepared)
         response = await self.client.put(
-            uri,
-            headers={**headers, "Content-Type": prepared.mime_type},
+            target.url,
+            headers=pinned_headers(target, {**headers, "Content-Type": prepared.mime_type}),
             content=stream,
             follow_redirects=False,
+            extensions=target.extensions,
         )
         response.raise_for_status()
         stream.verify()
@@ -481,17 +521,24 @@ class AttachmentService:
     ) -> Path:
         _require_unexpired(ticket.expires_at, "attachment download ticket")
         uri = _https_uri(attachment.object_uri, "object_uri")
+        target = await pin_https_url(
+            uri, resolver=self.address_resolver, field="attachment object URI"
+        )
         temporary_name = f".awiki-lite-{uuid4()}.part"
         temporary_fd: int | None = None
         try:
             async with self.client.stream(
                 "GET",
-                uri,
-                headers={
-                    "Authorization": f"Bearer {ticket.value}",
-                    "Accept-Encoding": "identity",
-                },
+                target.url,
+                headers=pinned_headers(
+                    target,
+                    {
+                        "Authorization": f"Bearer {ticket.value}",
+                        "Accept-Encoding": "identity",
+                    },
+                ),
                 follow_redirects=False,
+                extensions=target.extensions,
             ) as response:
                 response.raise_for_status()
                 encoding = response.headers.get("Content-Encoding")
@@ -509,10 +556,14 @@ class AttachmentService:
                     | getattr(os, "O_CLOEXEC", 0)
                     | getattr(os, "O_NOFOLLOW", 0)
                 )
-                temporary_fd = os.open(
-                    temporary_name, flags, 0o600, dir_fd=destination.directory_fd
-                )
-                os.fchmod(temporary_fd, 0o600)
+                temporary_path = destination.directory / temporary_name
+                if destination.directory_fd is None:
+                    temporary_fd = os.open(temporary_path, flags, 0o600)
+                else:
+                    temporary_fd = os.open(
+                        temporary_name, flags, 0o600, dir_fd=destination.directory_fd
+                    )
+                _secure_open_file(temporary_fd, temporary_path)
                 digest = hashlib.sha256()
                 total = 0
                 async for chunk in response.aiter_bytes(CHUNK_SIZE):
@@ -528,17 +579,23 @@ class AttachmentService:
                 os.close(temporary_fd)
                 temporary_fd = None
             try:
-                os.link(
-                    temporary_name,
-                    destination.filename,
-                    src_dir_fd=destination.directory_fd,
-                    dst_dir_fd=destination.directory_fd,
-                    follow_symlinks=False,
-                )
+                if destination.directory_fd is None:
+                    os.link(temporary_path, destination.path, follow_symlinks=False)
+                else:
+                    os.link(
+                        temporary_name,
+                        destination.filename,
+                        src_dir_fd=destination.directory_fd,
+                        dst_dir_fd=destination.directory_fd,
+                        follow_symlinks=False,
+                    )
             except FileExistsError as exc:
                 raise ValueError("attachment output file already exists") from exc
-            os.unlink(temporary_name, dir_fd=destination.directory_fd)
-            os.fsync(destination.directory_fd)
+            if destination.directory_fd is None:
+                os.unlink(temporary_path)
+            else:
+                os.unlink(temporary_name, dir_fd=destination.directory_fd)
+                os.fsync(destination.directory_fd)
             return destination.path
         except (ValueError, RuntimeError, httpx.HTTPError):
             raise
@@ -549,7 +606,10 @@ class AttachmentService:
                 with suppress(OSError):
                     os.close(temporary_fd)
             with suppress(OSError):
-                os.unlink(temporary_name, dir_fd=destination.directory_fd)
+                if destination.directory_fd is None:
+                    os.unlink(destination.directory / temporary_name)
+                else:
+                    os.unlink(temporary_name, dir_fd=destination.directory_fd)
 
     async def _control(
         self, identity: UnlockedIdentity, method: str, params: dict[str, Any]
@@ -693,16 +753,10 @@ def _https_uri(value: Any, field_name: str) -> str:
         or parsed.fragment
     ):
         raise RuntimeError(f"attachment service returned an unsafe {field_name}")
-    hostname = parsed.hostname.lower().rstrip(".")
-    if hostname == "localhost" or hostname.endswith(".localhost"):
-        raise RuntimeError(f"attachment service returned an unsafe {field_name}")
     try:
-        address = ipaddress.ip_address(hostname)
-    except ValueError:
-        pass
-    else:
-        if not address.is_global:
-            raise RuntimeError(f"attachment service returned an unsafe {field_name}")
+        validate_public_hostname(parsed.hostname.lower().rstrip("."), field=field_name)
+    except ValueError as exc:
+        raise RuntimeError(f"attachment service returned an unsafe {field_name}") from exc
     return uri
 
 

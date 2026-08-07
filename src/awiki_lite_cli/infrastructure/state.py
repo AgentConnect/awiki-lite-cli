@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -14,7 +13,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from cryptography.hazmat.primitives import serialization
@@ -62,9 +61,12 @@ class SecureStateStore:
         self.secrets_dir = root / "secrets"
 
     def initialize(self) -> None:
-        os.umask(0o077)
-        self._ensure_directory(self.root)
-        self._ensure_directory(self.secrets_dir)
+        previous_umask = os.umask(0o077)
+        try:
+            self._ensure_directory(self.root)
+            self._ensure_directory(self.secrets_dir)
+        finally:
+            os.umask(previous_umask)
 
     @property
     def exists(self) -> bool:
@@ -77,11 +79,11 @@ class SecureStateStore:
         self._reject_unsafe_target(path)
         fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
-            os.fchmod(fd, 0o600)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            _secure_open_file(fd, path)
+            _lock_file(fd)
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _unlock_file(fd)
             os.close(fd)
 
     def save_registration(
@@ -173,6 +175,20 @@ class SecureStateStore:
             raise StateError("local session is invalid")
         return SessionState(access_token=token)
 
+    def save_session(self, access_token: str) -> None:
+        """Atomically replace only the bearer session, preserving identity keys."""
+        if not isinstance(access_token, str) or not access_token.strip():
+            raise StateError("refreshed session is invalid")
+        with self.lock():
+            if not self.exists:
+                raise IdentityMissingError("local identity is not registered")
+            self._atomic_json(self.root / "session.json", {"access_token": access_token})
+
+    def load_device_signing_key(self, passphrase: str) -> Any:
+        """Unlock the registered device signing key without requiring a live session."""
+        self.load_public()
+        return self._load_keys(passphrase)[1]
+
     def unlock(self, passphrase: str) -> UnlockedIdentity:
         identity = self.load_public()
         session = self.load_session()
@@ -228,11 +244,6 @@ class SecureStateStore:
 
     def clear_pending(self) -> None:
         path = self.root / "pending-registration.json"
-        if path.exists() and not path.is_symlink():
-            path.unlink()
-
-    def clear_session(self) -> None:
-        path = self.root / "session.json"
         if path.exists() and not path.is_symlink():
             path.unlink()
 
@@ -603,9 +614,10 @@ class SecureStateStore:
             info = path.lstat()
             if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
                 raise StateError("state path is not a safe directory")
-            if info.st_uid != os.getuid():
+            if not _owned_by_current_user(path, info):
                 raise StateError("state directory is not owned by the current user")
             os.chmod(path, 0o700)
+            _secure_windows_path(path, directory=True)
             return
         self._validate_creation_parent(path.parent)
         try:
@@ -615,6 +627,7 @@ class SecureStateStore:
             self._ensure_directory(path)
             return
         os.chmod(path, 0o700)
+        _secure_windows_path(path, directory=True)
 
     @staticmethod
     def _validate_creation_parent(parent: Path) -> None:
@@ -626,7 +639,7 @@ class SecureStateStore:
         info = candidate.lstat()
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
             raise StateError("state parent directory is unsafe")
-        if info.st_uid != os.getuid():
+        if not _owned_by_current_user(candidate, info):
             raise StateError("state parent directory is not owned by the current user")
 
     @staticmethod
@@ -643,12 +656,13 @@ class SecureStateStore:
         self._reject_unsafe_target(path)
         fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         try:
-            os.fchmod(fd, 0o600)
+            _secure_open_file(fd, Path(temporary))
             with os.fdopen(fd, "wb", closefd=True) as stream:
                 stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
+            _secure_windows_path(path, directory=False)
             self._fsync_directory(path.parent)
         except BaseException:
             with suppress(FileNotFoundError):
@@ -657,6 +671,8 @@ class SecureStateStore:
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:
+        if os.name == "nt":
+            return
         directory_fd = os.open(path, os.O_RDONLY)
         try:
             os.fsync(directory_fd)
@@ -670,7 +686,9 @@ class SecureStateStore:
             raise IdentityMissingError("local identity is not registered") from exc
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
             raise StateError("state file is unsafe")
-        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        if not _owned_by_current_user(path, info) or (
+            os.name != "nt" and stat.S_IMODE(info.st_mode) & 0o077
+        ):
             raise StateError("state file permissions are unsafe")
         return path.read_bytes()
 
@@ -682,3 +700,82 @@ class SecureStateStore:
         if not isinstance(value, dict):
             raise StateError("local state file is invalid")
         return value
+
+
+def _lock_file(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\0")
+            os.fsync(fd)
+        os.lseek(fd, 0, os.SEEK_SET)
+        cast(Any, msvcrt).locking(fd, cast(Any, msvcrt).LK_LOCK, 1)
+    else:
+        import fcntl
+
+        cast(Any, fcntl).flock(fd, cast(Any, fcntl).LOCK_EX)
+
+
+def _unlock_file(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        cast(Any, msvcrt).locking(fd, cast(Any, msvcrt).LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        cast(Any, fcntl).flock(fd, cast(Any, fcntl).LOCK_UN)
+
+
+def _secure_open_file(fd: int, path: Path) -> None:
+    if os.name == "nt":
+        _secure_windows_path(path, directory=False)
+    else:
+        fchmod = cast(Any, os).fchmod
+        fchmod(fd, 0o600)
+
+
+def _owned_by_current_user(path: Path, info: os.stat_result) -> bool:
+    if os.name != "nt":
+        getuid = cast(Any, os).getuid
+        return bool(info.st_uid == getuid())
+    import win32api  # type: ignore[import-untyped]
+    import win32con  # type: ignore[import-untyped]
+    import win32security  # type: ignore[import-untyped]
+
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+    current_sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+    owner_sid = win32security.GetFileSecurity(
+        str(path), win32security.OWNER_SECURITY_INFORMATION
+    ).GetSecurityDescriptorOwner()
+    return bool(owner_sid == current_sid)
+
+
+def _secure_windows_path(path: Path, *, directory: bool) -> None:
+    if os.name != "nt":
+        return
+    import ntsecuritycon  # type: ignore[import-untyped]
+    import win32api
+    import win32con
+    import win32security
+
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+    user_sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+    system_sid = win32security.CreateWellKnownSid(win32security.WinLocalSystemSid, None)
+    acl = win32security.ACL()
+    inheritance = win32con.OBJECT_INHERIT_ACE | win32con.CONTAINER_INHERIT_ACE if directory else 0
+    for sid in (user_sid, system_sid):
+        acl.AddAccessAllowedAceEx(
+            win32security.ACL_REVISION, inheritance, ntsecuritycon.FILE_ALL_ACCESS, sid
+        )
+    win32security.SetNamedSecurityInfo(
+        str(path),
+        win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        acl,
+        None,
+    )

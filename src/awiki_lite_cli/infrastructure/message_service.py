@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -22,17 +21,14 @@ from awiki_lite_cli.infrastructure.attachment_manifest import (
     build_manifest,
     parse_manifest,
 )
-from awiki_lite_cli.infrastructure.rpc import call_json_rpc
+from awiki_lite_cli.infrastructure.rpc import ProtocolResponseError, call_json_rpc
+from awiki_lite_cli.infrastructure.validation import validate_wba_did
 
 ORIGIN_SCHEME = "anp-rfc9421-origin-proof-v1"
-DID_RE = re.compile(r"^did:wba:[A-Za-z0-9.-]+(?::[^\s]+)?$")
 
 
 def validate_did(value: str) -> str:
-    did = value.strip()
-    if not DID_RE.fullmatch(did):
-        raise ValueError("recipient must be an exact did:wba identifier")
-    return did
+    return validate_wba_did(value, field="recipient")
 
 
 def build_direct_send(
@@ -145,6 +141,10 @@ def build_capabilities(did: str) -> dict[str, Any]:
 def _local_params(profile: str, did: str, body: dict[str, Any]) -> dict[str, Any]:
     if not 1 <= int(body.get("limit", 1)) <= 100:
         raise ValueError("limit must be between 1 and 100")
+    if not isinstance(body.get("skip", 0), int) or isinstance(body.get("skip", 0), bool):
+        raise ValueError("skip must be a non-negative integer")
+    if int(body.get("skip", 0)) < 0:
+        raise ValueError("skip must be a non-negative integer")
     return {
         "meta": {"profile": profile, "security_profile": "transport-protected", "sender_did": did},
         "body": body,
@@ -290,16 +290,17 @@ class MessageService:
         return value
 
     async def inbox(
-        self, identity: AuthenticatedIdentity | UnlockedIdentity, limit: int
+        self, identity: AuthenticatedIdentity | UnlockedIdentity, limit: int, skip: int = 0
     ) -> tuple[list[ChatMessage], bool]:
         result = await call_json_rpc(
             self.client,
             self.endpoint,
             "inbox.get",
-            build_inbox(identity.identity.did, limit),
+            build_inbox(identity.identity.did, limit, skip),
             access_token=identity.session.access_token,
         )
-        return _parse_page(result), bool(_object(result).get("has_more", False))
+        page = _object(result)
+        return _parse_page(page), _required_bool(page, "has_more", default=False)
 
     async def mark_read(
         self, identity: AuthenticatedIdentity | UnlockedIdentity, ids: list[str]
@@ -311,23 +312,31 @@ class MessageService:
             build_mark_read(identity.identity.did, ids),
             access_token=identity.session.access_token,
         )
-        return int(_object(result).get("updated_count", 0))
+        page = _object(result)
+        count = page.get("updated_count", 0)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise ProtocolResponseError("service returned an invalid updated_count")
+        return count
 
     async def history(
-        self, identity: AuthenticatedIdentity | UnlockedIdentity, peer: str, limit: int
+        self,
+        identity: AuthenticatedIdentity | UnlockedIdentity,
+        peer: str,
+        limit: int,
+        skip: int = 0,
     ) -> tuple[list[ChatMessage], bool]:
         result = await call_json_rpc(
             self.client,
             self.endpoint,
             "direct.get_history",
-            build_history(identity.identity.did, peer, limit),
+            build_history(identity.identity.did, peer, limit, skip),
             access_token=identity.session.access_token,
         )
-        return _parse_page(result), bool(_object(result).get("has_more", False))
+        page = _object(result)
+        return _parse_page(page), _required_bool(page, "has_more", default=False)
 
 
-def _parse_page(value: Any) -> list[ChatMessage]:
-    page = _object(value)
+def _parse_page(page: dict[str, Any]) -> list[ChatMessage]:
     messages = page.get("messages")
     if not isinstance(messages, list):
         raise RuntimeError("service returned an invalid message page")
@@ -340,12 +349,12 @@ def _parse_page(value: Any) -> list[ChatMessage]:
             attachment, caption = parse_manifest(row.get("content"))
             output.append(
                 ChatMessage(
-                    str(row["id"]),
-                    str(row["sender_did"]),
-                    str(row["receiver_did"]),
+                    _required_str(row, "id"),
+                    _response_did(row, "sender_did"),
+                    _response_did(row, "receiver_did"),
                     "",
-                    str(row.get("sent_at") or row.get("created_at") or ""),
-                    bool(row.get("is_read")),
+                    _optional_timestamp(row),
+                    _required_bool(row, "is_read", default=False),
                     (attachment,),
                     caption,
                 )
@@ -355,12 +364,12 @@ def _parse_page(value: Any) -> list[ChatMessage]:
             continue
         output.append(
             ChatMessage(
-                str(row["id"]),
-                str(row["sender_did"]),
-                str(row["receiver_did"]),
-                str(row["content"]),
-                str(row.get("sent_at") or row.get("created_at") or ""),
-                bool(row.get("is_read")),
+                _required_str(row, "id"),
+                _response_did(row, "sender_did"),
+                _response_did(row, "receiver_did"),
+                _required_str(row, "content", allow_empty=True),
+                _optional_timestamp(row),
+                _required_bool(row, "is_read", default=False),
             )
         )
     return output
@@ -368,5 +377,33 @@ def _parse_page(value: Any) -> list[ChatMessage]:
 
 def _object(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise RuntimeError("service returned an invalid result")
+        raise ProtocolResponseError("service returned an invalid result")
     return value
+
+
+def _required_str(value: dict[str, Any], field: str, *, allow_empty: bool = False) -> str:
+    result = value.get(field)
+    if not isinstance(result, str) or (not allow_empty and not result):
+        raise ProtocolResponseError(f"service returned an invalid {field}")
+    return result
+
+
+def _required_bool(value: dict[str, Any], field: str, *, default: bool | None = None) -> bool:
+    result = value.get(field, default)
+    if not isinstance(result, bool):
+        raise ProtocolResponseError(f"service returned an invalid {field}")
+    return result
+
+
+def _optional_timestamp(value: dict[str, Any]) -> str:
+    result = value.get("sent_at", value.get("created_at", ""))
+    if not isinstance(result, str):
+        raise ProtocolResponseError("service returned an invalid message timestamp")
+    return result
+
+
+def _response_did(value: dict[str, Any], field: str) -> str:
+    try:
+        return validate_did(_required_str(value, field))
+    except ValueError as exc:
+        raise ProtocolResponseError(f"service returned an invalid {field}") from exc

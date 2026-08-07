@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
@@ -16,6 +17,7 @@ from awiki_lite_cli.infrastructure.attachment_manifest import parse_manifest
 from awiki_lite_cli.infrastructure.group_service import GroupService
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
+from awiki_lite_cli.presentation import terminal_text
 
 app = typer.Typer(help="Create and use transport-protected ordinary groups.")
 T = TypeVar("T")
@@ -78,12 +80,22 @@ def add(group_did: str, member_did: str) -> None:
 
 
 @app.command("send")
-def send(group_did: str, text: str) -> None:
+def send(
+    group_did: str,
+    text: str | None = typer.Argument(None),
+    stdin: bool = typer.Option(False, "--stdin", help="Read message text from standard input."),
+) -> None:
     """Send one plain text message to an ordinary group."""
+    if stdin and text is not None:
+        typer.echo("Invalid input: TEXT and --stdin are mutually exclusive", err=True)
+        raise typer.Exit(2)
+    text_value = sys.stdin.read() if stdin else text
+    if text_value is None:
+        text_value = typer.prompt("Message")
 
     async def action(workflow: GroupWorkflow, store: SecureStateStore) -> GroupMessage:
         passphrase = typer.prompt("Local key passphrase", hide_input=True)
-        return await workflow.send(store.unlock(passphrase), group_did, text)
+        return await workflow.send(store.unlock(passphrase), group_did, text_value)
 
     message = _run(action)
     typer.echo(f"Sent {message.message_id} to {message.group_did}")
@@ -112,7 +124,9 @@ def _run(action: Callable[[GroupWorkflow, SecureStateStore], Awaitable[T]]) -> T
         async with httpx.AsyncClient(
             timeout=20.0, trust_env=False, follow_redirects=False
         ) as client:
-            workflow = GroupWorkflow(GroupService(client, settings.message_service_url), store)
+            workflow = GroupWorkflow(
+                GroupService(client, settings.message_service_url), store, parse_manifest
+            )
             return await action(workflow, store)
 
     try:
@@ -122,8 +136,7 @@ def _run(action: Callable[[GroupWorkflow, SecureStateStore], Awaitable[T]]) -> T
         raise typer.Exit(2) from None
     except JsonRpcFailure as exc:
         if exc.code in {401, 1401} or "unauthorized" in exc.message.lower():
-            store.clear_session()
-            typer.echo("Session expired; register again in this v0.2 client.", err=True)
+            typer.echo("Session expired; run `awiki-lite session refresh`.", err=True)
         else:
             typer.echo(f"Group service rejected the request (JSON-RPC code {exc.code}).", err=True)
         raise typer.Exit(1) from None
@@ -138,7 +151,10 @@ def _render_groups(groups: list[GroupSummary]) -> None:
         return
     for group in groups:
         role = f" role={group.my_role}" if group.my_role else ""
-        typer.echo(f"{group.display_name} ({group.group_did}) members={group.member_count}{role}")
+        typer.echo(
+            f"{terminal_text(group.display_name)} ({terminal_text(group.group_did)}) "
+            f"members={group.member_count}{terminal_text(role)}"
+        )
 
 
 def _render_members(members: list[GroupMember]) -> None:
@@ -146,7 +162,10 @@ def _render_members(members: list[GroupMember]) -> None:
         typer.echo("No group members.")
         return
     for member in members:
-        typer.echo(f"{member.agent_did} role={member.role} status={member.status}")
+        typer.echo(
+            f"{terminal_text(member.agent_did)} role={terminal_text(member.role)} "
+            f"status={terminal_text(member.status)}"
+        )
 
 
 def _render_messages(messages: list[GroupMessage]) -> None:
@@ -155,12 +174,16 @@ def _render_messages(messages: list[GroupMessage]) -> None:
         return
     for message in messages:
         if message.message_type == "text":
-            typer.echo(f"[{message.group_event_seq}] {message.sender_did}: {message.content}")
+            typer.echo(
+                f"[{message.group_event_seq}] {terminal_text(message.sender_did)}: "
+                f"{terminal_text(message.content)}"
+            )
         else:
             attachment, caption = parse_manifest(message.content)
-            suffix = f" caption={caption}" if caption else ""
+            suffix = f" caption={terminal_text(caption)}" if caption else ""
             typer.echo(
-                f"[{message.group_event_seq}] {message.sender_did}: [attachment] "
-                f"{attachment.filename} id={attachment.attachment_id} "
-                f"message={message.message_id}{suffix}"
+                f"[{message.group_event_seq}] {terminal_text(message.sender_did)}: [attachment] "
+                f"{terminal_text(attachment.filename)} "
+                f"id={terminal_text(attachment.attachment_id)} "
+                f"message={terminal_text(message.message_id)}{suffix}"
             )

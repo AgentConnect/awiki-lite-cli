@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+from typing import Any
 from urllib.parse import urlparse
 
+from awiki_lite_cli.application.ports import RegistrationServicePort, StateStorePort
 from awiki_lite_cli.domain.models import IdentityState
-from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
-from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
-from awiki_lite_cli.infrastructure.user_service import UserService
 
 HANDLE_RE = re.compile(r"^[a-z][a-z0-9_-]{2,31}$")
 
@@ -28,14 +28,21 @@ def normalize_phone(value: str) -> str:
 
 
 class RegistrationWorkflow:
-    def __init__(self, service: UserService, store: SecureStateStore, message_url: str) -> None:
+    def __init__(
+        self,
+        service: RegistrationServicePort,
+        store: StateStorePort,
+        message_url: str,
+        identity_generator: Callable[[str, str, str], Any],
+    ) -> None:
         self.service = service
         self.store = store
         self.message_url = message_url
+        self.identity_generator = identity_generator
 
     async def begin(self, handle_input: str, phone_input: str) -> tuple[str, str, str]:
         if self.store.exists:
-            raise StateError("a local identity already exists")
+            raise RuntimeError("a local identity already exists")
         handle = normalize_handle(handle_input)
         phone = normalize_phone(phone_input)
         domain = urlparse(self.service.base_url).hostname
@@ -58,7 +65,7 @@ class RegistrationWorkflow:
             identity = pending
             self.store.unlock_pending_keys(passphrase)
         else:
-            generated = generate_identity(domain, handle, self.message_url)
+            generated = self.identity_generator(domain, handle, self.message_url)
             identity = IdentityState(
                 generated.did,
                 expected_handle,

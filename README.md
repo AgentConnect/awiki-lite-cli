@@ -2,8 +2,8 @@
 
 AWiki Lite CLI is a deliberately small Python client for one local AWiki identity, ordinary
 transport-protected direct/group messages, and single-file plain attachments. Version 0.2 does not
-provide E2EE, MLS, object encryption, multiple devices, recovery, member removal, multi-file
-messages, resumable transfer, daemon mode, WebSockets, or reliable sync v2.
+provide E2EE, MLS, object encryption, multiple devices, identity recovery, member removal,
+multi-file messages, resumable transfer, or reliable local sync projection.
 
 ## Setup
 
@@ -33,17 +33,61 @@ uv run awiki-lite group messages 'did:wba:...:group:...' --since-seq 0
 uv run awiki-lite attachment send ./report.pdf --to 'did:wba:...:user:bob:...'
 uv run awiki-lite attachment send ./report.pdf --group 'did:wba:...:group:...'
 uv run awiki-lite attachment download MESSAGE_ID ATTACHMENT_ID --output ./downloads
+uv run awiki-lite session refresh
+
+# Keep this foreground process running for real-time sync hints; Ctrl-C stops it.
+uv run awiki-lite listener run
+# Emit one JSON event and exit, which is useful for scripts and connection checks.
+uv run awiki-lite listener run --once --json
+
+# Install and manage the native platform service.
+uv run awiki-lite listener install
+uv run awiki-lite listener start
+uv run awiki-lite listener status --json
+uv run awiki-lite listener restart
+uv run awiki-lite listener stop
+uv run awiki-lite listener uninstall
+```
+
+For private text, avoid shell history and process arguments by using standard input:
+
+```bash
+printf '%s' 'private message' | uv run awiki-lite dm send 'did:wba:...' --stdin
+printf '%s' 'private group message' | uv run awiki-lite group send 'did:wba:...' --stdin
+printf '%s' 'private caption' | uv run awiki-lite attachment send ./report.pdf \
+  --to 'did:wba:...' --caption-stdin
 ```
 
 DID arguments are exact `did:wba` identifiers; Handle lookup is not implemented. Refresh the
 corresponding inbox/history/group messages before downloading so the CLI has an authenticated
 Manifest context. Downloads never overwrite an existing file.
 
+The listener follows the Rust CLI's `/im/ws` contract: it authenticates with the saved exact-device
+Bearer token, requires the `awiki.sync.changed.v2` subprotocol, sends protocol Ping frames every 60
+seconds, and reconnects with a bounded 1–30 second exponential delay. It emits change hints only;
+use the existing inbox, history, or group commands to fetch authoritative content. The listener is
+a foreground process and does not load private keys.
+
+Service commands install the same listener under the native per-user manager: a systemd **user**
+unit on Linux, a LaunchAgent on macOS, and an interactive logon task in Windows Task Scheduler.
+Installation does not require root or an administrator. `start` installs the definition when
+missing, while `restart` requires an existing installation. The generated definition captures the
+active Python interpreter, state directory, and message-service URL, but never embeds the session
+token, passphrase, or private key.
+Reinstall the service after moving/removing the Python environment or changing those paths.
+
+On Linux, the user service normally follows the user-manager lifetime. Keeping it active after
+logout may require an administrator to enable lingering with `loginctl enable-linger USER`; the CLI
+does not change this system policy. Logs are available through `journalctl --user -u
+com.agentconnect.awiki-lite-listener.service`. macOS logs are written below the state directory's
+`logs/` folder; Windows state is visible in Task Scheduler under `AgentConnect`.
+
 ## Key and Transfer Security
 
 Private keys are passphrase-encrypted PKCS#8 PEM files; no Keychain is used, the passphrase is not
-saved, and unlocked keys are not cached. State directories are mode `0700`; token, pending, context,
-and key files are mode `0600` and use atomic writes with symlink checks.
+saved, and unlocked keys are not cached. On POSIX, state directories are mode `0700` and files are
+mode `0600`; on Windows they use a protected current-user/SYSTEM ACL. Writes are atomic and reject
+unsafe symlink targets.
 
 Unknown-result retries retain stable IDs, timestamps, a proof nonce, lifecycle stage, target DID,
 and content fingerprints—but no message/caption plaintext, proof signature, private key, upload

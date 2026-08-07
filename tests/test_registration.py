@@ -8,6 +8,7 @@ from awiki_lite_cli.application.registration import (
     normalize_handle,
     normalize_phone,
 )
+from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
 from awiki_lite_cli.infrastructure.state import SecureStateStore
 from awiki_lite_cli.infrastructure.user_service import UserService
 
@@ -43,7 +44,10 @@ async def test_registration_flow_sends_scoped_otp_and_persists(tmp_path: Path) -
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         store = SecureStateStore(tmp_path / "state")
         flow = RegistrationWorkflow(
-            UserService(client, "https://example.test"), store, "https://example.test"
+            UserService(client, "https://example.test"),
+            store,
+            "https://example.test",
+            generate_identity,
         )
         handle, phone, domain = await flow.begin("Alice", "+15555550100")
         identity = await flow.finish(handle, phone, domain, "123456", "long passphrase value")
@@ -79,7 +83,10 @@ async def test_registration_response_loss_reuses_staged_identity(tmp_path: Path)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         store = SecureStateStore(tmp_path / "state")
         flow = RegistrationWorkflow(
-            UserService(client, "https://example.test"), store, "https://example.test"
+            UserService(client, "https://example.test"),
+            store,
+            "https://example.test",
+            generate_identity,
         )
         with pytest.raises(httpx.ReadTimeout):
             await flow.finish(

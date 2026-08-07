@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
@@ -14,30 +15,41 @@ from awiki_lite_cli.domain.models import AttachmentContext, AuthenticatedIdentit
 from awiki_lite_cli.infrastructure.message_service import MessageService, validate_did
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
+from awiki_lite_cli.presentation import terminal_text
 
 app = typer.Typer(help="Send and read transport-protected direct messages.")
 T = TypeVar("T")
 
 
 @app.command("send")
-def send(recipient_did: str, text: str) -> None:
+def send(
+    recipient_did: str,
+    text: str | None = typer.Argument(None),
+    stdin: bool = typer.Option(False, "--stdin", help="Read message text from standard input."),
+) -> None:
     """Send a plain text message to one exact DID."""
+    if stdin and text is not None:
+        typer.echo("Invalid input: TEXT and --stdin are mutually exclusive", err=True)
+        raise typer.Exit(2)
+    text_value = sys.stdin.read() if stdin else text
+    if text_value is None:
+        text_value = typer.prompt("Message")
 
     async def action(service: MessageService, store: SecureStateStore) -> ChatMessage:
         recipient = validate_did(recipient_did)
-        if not text or not text.strip():
+        if not text_value or not text_value.strip():
             raise ValueError("message text must not be empty")
-        if len(text.encode()) > 64 * 1024:
+        if len(text_value.encode()) > 64 * 1024:
             raise ValueError("message text is too large")
         passphrase = typer.prompt("Local key passphrase", hide_input=True)
         identity = store.unlock(passphrase)
         await service.ensure_direct_base(identity)
-        pending = store.prepare_send(recipient, text)
+        pending = store.prepare_send(recipient, text_value)
         try:
             message = await service.send(
                 identity,
                 recipient,
-                text,
+                text_value,
                 operation_id=pending.operation_id,
                 message_id=pending.message_id,
                 created_at=pending.created_at,
@@ -58,6 +70,7 @@ def send(recipient_did: str, text: str) -> None:
 @app.command("inbox")
 def inbox(
     limit: int = typer.Option(20, min=1, max=100),
+    skip: int = typer.Option(0, min=0, help="Skip messages from the start of the result set."),
     mark_read: bool = typer.Option(False, "--mark-read", help="Mark displayed messages read."),
 ) -> None:
     """Read the local plain-message inbox."""
@@ -66,7 +79,7 @@ def inbox(
         service: MessageService, store: SecureStateStore
     ) -> tuple[list[ChatMessage], bool, int]:
         identity = AuthenticatedIdentity(store.load_public(), store.load_session())
-        messages, has_more = await service.inbox(identity, limit)
+        messages, has_more = await service.inbox(identity, limit, skip)
         _save_attachment_contexts(store, messages)
         updated = (
             await service.mark_read(identity, [item.message_id for item in messages])
@@ -80,25 +93,29 @@ def inbox(
     if updated:
         typer.echo(f"Marked {updated} message(s) read.")
     if has_more:
-        typer.echo("More messages are available; increase --limit.")
+        typer.echo(f"More messages are available; use --skip {skip + limit}.")
 
 
 @app.command("history")
-def history(peer_did: str, limit: int = typer.Option(20, min=1, max=100)) -> None:
+def history(
+    peer_did: str,
+    limit: int = typer.Option(20, min=1, max=100),
+    skip: int = typer.Option(0, min=0, help="Skip messages from the start of the result set."),
+) -> None:
     """Read plain-message history with one exact DID."""
 
     async def action(
         service: MessageService, store: SecureStateStore
     ) -> tuple[list[ChatMessage], bool]:
         identity = AuthenticatedIdentity(store.load_public(), store.load_session())
-        messages, has_more = await service.history(identity, peer_did, limit)
+        messages, has_more = await service.history(identity, peer_did, limit, skip)
         _save_attachment_contexts(store, messages)
         return messages, has_more
 
     messages, has_more = _run(action)
     _render(messages)
     if has_more:
-        typer.echo("More messages are available; increase --limit.")
+        typer.echo(f"More messages are available; use --skip {skip + limit}.")
 
 
 def _run(action: Callable[[MessageService, SecureStateStore], Awaitable[T]]) -> T:
@@ -116,8 +133,7 @@ def _run(action: Callable[[MessageService, SecureStateStore], Awaitable[T]]) -> 
         raise typer.Exit(2) from None
     except JsonRpcFailure as exc:
         if exc.code in {401, 1401} or "unauthorized" in exc.message.lower():
-            store.clear_session()
-            typer.echo("Session expired; register again in this v0.1 client.", err=True)
+            typer.echo("Session expired; run `awiki-lite session refresh`.", err=True)
         else:
             typer.echo(
                 f"Message service rejected the request (JSON-RPC code {exc.code}).", err=True
@@ -136,14 +152,19 @@ def _render(messages: list[ChatMessage]) -> None:
         timestamp = f"[{message.created_at}] " if message.created_at else ""
         if message.attachments:
             attachment = message.attachments[0]
-            caption = f" caption={message.caption}" if message.caption else ""
+            caption = f" caption={terminal_text(message.caption)}" if message.caption else ""
             typer.echo(
-                f"{timestamp}{message.sender_did} -> {message.target_did}: "
-                f"[attachment {attachment.filename} id={attachment.attachment_id} "
-                f"message={message.message_id}]{caption}"
+                f"{terminal_text(timestamp)}{terminal_text(message.sender_did)} -> "
+                f"{terminal_text(message.target_did)}: "
+                f"[attachment {terminal_text(attachment.filename)} "
+                f"id={terminal_text(attachment.attachment_id)} "
+                f"message={terminal_text(message.message_id)}]{caption}"
             )
         else:
-            typer.echo(f"{timestamp}{message.sender_did} -> {message.target_did}: {message.text}")
+            typer.echo(
+                f"{terminal_text(timestamp)}{terminal_text(message.sender_did)} -> "
+                f"{terminal_text(message.target_did)}: {terminal_text(message.text)}"
+            )
 
 
 def _save_attachment_contexts(store: SecureStateStore, messages: list[ChatMessage]) -> None:

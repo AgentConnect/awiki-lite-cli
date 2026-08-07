@@ -11,7 +11,9 @@ dependencies = [
     "cryptography>=45,<47",
     "httpx>=0.28,<1.0",
     "platformdirs>=4.3,<5.0",
+    "pywin32>=311,<312; sys_platform == 'win32'",
     "typer>=0.16,<1.0",
+    "websockets>=16,<18",
 ]
 
 [project.scripts]

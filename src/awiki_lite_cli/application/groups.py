@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
+from typing import Any
 
+from awiki_lite_cli.application.errors import JsonRpcFailure
+from awiki_lite_cli.application.ports import GroupServicePort, StateStorePort
 from awiki_lite_cli.domain.models import (
     AttachmentContext,
     AuthenticatedIdentity,
@@ -13,17 +17,19 @@ from awiki_lite_cli.domain.models import (
     GroupSummary,
     UnlockedIdentity,
 )
-from awiki_lite_cli.infrastructure.attachment_manifest import parse_manifest
-from awiki_lite_cli.infrastructure.group_service import GroupService, validate_group_did
-from awiki_lite_cli.infrastructure.message_service import validate_did
-from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
-from awiki_lite_cli.infrastructure.state import SecureStateStore
+from awiki_lite_cli.domain.validation import validate_wba_did
 
 
 class GroupWorkflow:
-    def __init__(self, service: GroupService, store: SecureStateStore) -> None:
+    def __init__(
+        self,
+        service: GroupServicePort,
+        store: StateStorePort,
+        manifest_parser: Callable[[Any], tuple[Any, str | None]],
+    ) -> None:
         self.service = service
         self.store = store
+        self.manifest_parser = manifest_parser
 
     async def create(self, identity: UnlockedIdentity, display_name: str) -> GroupSummary:
         name = display_name.strip()
@@ -43,8 +49,8 @@ class GroupWorkflow:
         return result
 
     async def add(self, identity: UnlockedIdentity, group_did: str, member_did: str) -> str:
-        group = validate_group_did(group_did)
-        member = validate_did(member_did)
+        group = validate_wba_did(group_did, field="group DID")
+        member = validate_wba_did(member_did)
         await self.service.capabilities(identity)
         digest = _input_digest({"group_did": group, "member_did": member})
         pending = self.store.prepare_operation("group.add", group, digest, needs_message_id=False)
@@ -57,7 +63,7 @@ class GroupWorkflow:
         return result
 
     async def send(self, identity: UnlockedIdentity, group_did: str, text: str) -> GroupMessage:
-        group = validate_group_did(group_did)
+        group = validate_wba_did(group_did, field="group DID")
         if not text or not text.strip():
             raise ValueError("message text must not be empty")
         capabilities = await self.service.capabilities(identity)
@@ -98,7 +104,7 @@ class GroupWorkflow:
         contexts = []
         for message in rows:
             if message.message_type == "attachment_manifest":
-                attachment, _caption = parse_manifest(message.content)
+                attachment, _caption = self.manifest_parser(message.content)
                 contexts.append(
                     AttachmentContext(
                         message.message_id,

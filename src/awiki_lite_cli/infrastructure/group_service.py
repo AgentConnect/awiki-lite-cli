@@ -23,7 +23,7 @@ from awiki_lite_cli.infrastructure.attachment_manifest import (
     parse_manifest,
 )
 from awiki_lite_cli.infrastructure.message_service import build_capabilities, validate_did
-from awiki_lite_cli.infrastructure.rpc import call_json_rpc
+from awiki_lite_cli.infrastructure.rpc import ProtocolResponseError, call_json_rpc
 
 GROUP_PROFILE = "anp.group.base.v1"
 GROUP_LOCAL_PROFILE = "anp.group.local.v1"
@@ -307,14 +307,14 @@ class GroupService:
         ):
             raise RuntimeError("service returned mismatched group.send identifiers")
         return GroupMessage(
-            message_id=str(result["message_id"]),
+            message_id=_required_str(result, "message_id"),
             group_did=group,
             sender_did=identity.identity.did,
             message_type="text",
             content=text,
             content_type="text/plain",
             group_event_seq=_positive_int(result.get("group_event_seq"), "group_event_seq"),
-            created_at=str(result.get("accepted_at") or ""),
+            created_at=_required_str(result, "accepted_at"),
         )
 
     async def send_attachment(
@@ -338,14 +338,14 @@ class GroupService:
         ):
             raise RuntimeError("service returned mismatched group.send identifiers")
         return GroupMessage(
-            message_id=str(result["message_id"]),
+            message_id=_required_str(result, "message_id"),
             group_did=group,
             sender_did=identity.identity.did,
             message_type="attachment_manifest",
             content=build_manifest(attachment, caption),
             content_type=MANIFEST_CONTENT_TYPE,
             group_event_seq=_positive_int(result.get("group_event_seq"), "group_event_seq"),
-            created_at=str(result.get("accepted_at") or ""),
+            created_at=_required_str(result, "accepted_at"),
         )
 
     async def list_groups(
@@ -383,10 +383,16 @@ class GroupService:
         )
         if result.get("group_did") != validate_group_did(group_did):
             raise RuntimeError("service returned mismatched group member identifiers")
-        members = []
+        members: list[GroupMember] = []
         for raw in _list(result, "members"):
             row = _object(raw)
-            members.append(GroupMember(str(row["agent_did"]), str(row["role"]), str(row["status"])))
+            members.append(
+                GroupMember(
+                    _response_did(row, "agent_did"),
+                    _required_str(row, "role"),
+                    _required_str(row, "status"),
+                )
+            )
         return members, _next_cursor(result)
 
     async def messages(
@@ -418,18 +424,18 @@ class GroupService:
                 raise RuntimeError("service returned an invalid Group text projection")
             messages.append(
                 GroupMessage(
-                    message_id=str(row["message_id"]),
-                    group_did=str(row["group_did"]),
-                    sender_did=str(row["sender_did"]),
-                    message_type=str(row["type"]),
+                    message_id=_required_str(row, "message_id"),
+                    group_did=_response_did(row, "group_did"),
+                    sender_did=_response_did(row, "sender_did"),
+                    message_type=_required_str(row, "type"),
                     content=content,
-                    content_type=str(row["content_type"]),
+                    content_type=_required_str(row, "content_type"),
                     group_event_seq=_positive_int(row.get("group_event_seq"), "group_event_seq"),
-                    created_at=str(row.get("sent_at") or row.get("created_at") or ""),
+                    created_at=_optional_timestamp(row),
                 )
             )
         raw_next = result.get("next_since_seq")
-        next_seq = int(raw_next) if raw_next is not None else None
+        next_seq = _positive_int(raw_next, "next_since_seq") if raw_next is not None else None
         return messages, next_seq
 
     async def _mutate(
@@ -470,26 +476,23 @@ class GroupService:
 
 
 def _parse_group_summary(value: dict[str, Any]) -> GroupSummary:
-    group_did = validate_group_did(str(value["group_did"]))
+    group_did = _response_did(value, "group_did")
     profile = value.get("group_profile")
     name = value.get("name")
     if isinstance(profile, dict):
         name = profile.get("display_name", name)
     if not isinstance(name, str) or not name:
         raise RuntimeError("service returned a group without a display name")
-    state_version = str(value.get("group_state_version") or "")
-    if not state_version.isdigit() or int(state_version) <= 0:
-        raise RuntimeError("service returned an invalid group state version")
+    state_version = str(_positive_int(value.get("group_state_version"), "group_state_version"))
+    member_count = _nonnegative_int(value.get("member_count", 1), "member_count")
     return GroupSummary(
         group_did=group_did,
         display_name=name,
         group_state_version=state_version,
-        member_count=int(value.get("member_count", 1)),
-        my_role=str(value["my_role"]) if value.get("my_role") is not None else None,
-        membership_status=(
-            str(value["membership_status"]) if value.get("membership_status") is not None else None
-        ),
-        updated_at=str(value["updated_at"]) if value.get("updated_at") is not None else None,
+        member_count=member_count,
+        my_role=_optional_str(value, "my_role"),
+        membership_status=_optional_str(value, "membership_status"),
+        updated_at=_optional_str(value, "updated_at"),
     )
 
 
@@ -543,17 +546,24 @@ def _optional_positive_int(value: Any, field: str) -> int | None:
 
 
 def _positive_int(value: Any, field: str) -> int:
-    try:
+    if isinstance(value, int) and not isinstance(value, bool):
+        parsed = value
+    elif isinstance(value, str) and value.isascii() and value.isdecimal():
+        if len(value) > 1 and value.startswith("0"):
+            raise ProtocolResponseError(f"service returned invalid {field}")
         parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(f"service returned invalid {field}") from exc
+    else:
+        raise ProtocolResponseError(f"service returned invalid {field}")
     if parsed <= 0:
-        raise RuntimeError(f"service returned invalid {field}")
+        raise ProtocolResponseError(f"service returned invalid {field}")
     return parsed
 
 
 def _next_cursor(value: dict[str, Any]) -> str | None:
-    has_more = value.get("has_more") is True
+    raw_has_more = value.get("has_more")
+    if not isinstance(raw_has_more, bool):
+        raise ProtocolResponseError("service returned invalid has_more")
+    has_more = raw_has_more
     cursor = value.get("next_cursor")
     if has_more and (not isinstance(cursor, str) or not cursor):
         raise RuntimeError("service omitted the next group cursor")
@@ -571,5 +581,47 @@ def _list(value: dict[str, Any], field: str) -> list[Any]:
 
 def _object(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise RuntimeError("service returned an invalid Group result")
+        raise ProtocolResponseError("service returned an invalid Group result")
     return value
+
+
+def _nonnegative_int(value: Any, field: str) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        parsed = value
+    elif isinstance(value, str) and value.isascii() and value.isdecimal():
+        if len(value) > 1 and value.startswith("0"):
+            raise ProtocolResponseError(f"service returned invalid {field}")
+        parsed = int(value)
+    else:
+        raise ProtocolResponseError(f"service returned invalid {field}")
+    if parsed < 0:
+        raise ProtocolResponseError(f"service returned invalid {field}")
+    return parsed
+
+
+def _required_str(value: dict[str, Any], field: str) -> str:
+    result = value.get(field)
+    if not isinstance(result, str) or not result:
+        raise ProtocolResponseError(f"service returned invalid {field}")
+    return result
+
+
+def _optional_str(value: dict[str, Any], field: str) -> str | None:
+    result = value.get(field)
+    if result is not None and not isinstance(result, str):
+        raise ProtocolResponseError(f"service returned invalid {field}")
+    return result
+
+
+def _optional_timestamp(value: dict[str, Any]) -> str:
+    result = value.get("sent_at", value.get("created_at", ""))
+    if not isinstance(result, str):
+        raise ProtocolResponseError("service returned invalid message timestamp")
+    return result
+
+
+def _response_did(value: dict[str, Any], field: str) -> str:
+    try:
+        return validate_did(_required_str(value, field))
+    except ValueError as exc:
+        raise ProtocolResponseError(f"service returned invalid {field}") from exc

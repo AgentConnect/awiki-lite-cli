@@ -4,36 +4,42 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx
 
-from awiki_lite_cli.domain.models import AuthenticatedIdentity, GroupMessage, UnlockedIdentity
-from awiki_lite_cli.infrastructure.attachment_manifest import normalize_caption
-from awiki_lite_cli.infrastructure.attachment_service import (
-    AttachmentService,
-    prepare_download_destination,
-    prepare_file,
+from awiki_lite_cli.application.errors import JsonRpcFailure
+from awiki_lite_cli.application.ports import (
+    AttachmentServicePort,
+    GroupServicePort,
+    MessageServicePort,
+    StateStorePort,
 )
-from awiki_lite_cli.infrastructure.group_service import GroupService, validate_group_did
-from awiki_lite_cli.infrastructure.message_service import MessageService, validate_did
-from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
-from awiki_lite_cli.infrastructure.state import SecureStateStore
+from awiki_lite_cli.domain.models import AuthenticatedIdentity, GroupMessage, UnlockedIdentity
+from awiki_lite_cli.domain.validation import validate_wba_did
 
 
 class AttachmentWorkflow:
     def __init__(
         self,
-        attachments: AttachmentService,
-        direct: MessageService,
-        groups: GroupService,
-        store: SecureStateStore,
+        attachments: AttachmentServicePort,
+        direct: MessageServicePort,
+        groups: GroupServicePort,
+        store: StateStorePort,
+        caption_normalizer: Callable[[str | None], str | None],
+        file_preparer: Callable[[Path, int], Any],
+        destination_preparer: Callable[[Path, str], Any],
     ) -> None:
         self.attachments = attachments
         self.direct = direct
         self.groups = groups
         self.store = store
+        self.caption_normalizer = caption_normalizer
+        self.file_preparer = file_preparer
+        self.destination_preparer = destination_preparer
 
     async def send(
         self,
@@ -45,14 +51,14 @@ class AttachmentWorkflow:
         caption: str | None,
     ) -> tuple[str, str]:
         target_kind, target_did, pending_kind = _target(recipient_did, group_did)
-        normalized_caption = normalize_caption(caption)
+        normalized_caption = self.caption_normalizer(caption)
         capabilities = await self.attachments.capabilities(identity)
         if target_kind == "agent":
             await self.direct.ensure_direct_base(identity)
         else:
             await self.groups.capabilities(identity)
 
-        with prepare_file(file_path, capabilities.max_object_bytes) as prepared:
+        with self.file_preparer(file_path, capabilities.max_object_bytes) as prepared:
             input_digest = _input_digest(
                 {
                     "target_kind": target_kind,
@@ -162,7 +168,7 @@ class AttachmentWorkflow:
         if not message_id or not attachment_id:
             raise ValueError("message and attachment identifiers must not be empty")
         context = self.store.load_attachment_context(message_id, attachment_id)
-        with prepare_download_destination(output_dir, context.attachment.filename) as destination:
+        with self.destination_preparer(output_dir, context.attachment.filename) as destination:
             ticket = await self.attachments.get_download_ticket(identity, context)
             return await self.attachments.download(ticket, context.attachment, destination)
 
@@ -171,9 +177,9 @@ def _target(recipient_did: str | None, group_did: str | None) -> tuple[str, str,
     if (recipient_did is None) == (group_did is None):
         raise ValueError("choose exactly one of --to and --group")
     if recipient_did is not None:
-        return "agent", validate_did(recipient_did), "direct.attachment.send"
+        return "agent", validate_wba_did(recipient_did), "direct.attachment.send"
     assert group_did is not None
-    return "group", validate_group_did(group_did), "group.attachment.send"
+    return "group", validate_wba_did(group_did, field="group DID"), "group.attachment.send"
 
 
 def _input_digest(value: dict[str, str]) -> str:
