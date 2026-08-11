@@ -51,7 +51,7 @@
 | Rust CLI 交互 | `../awiki-cli-rs2/crates/awiki-cli/src/cli_shell/onboarding_handlers.rs` |
 | Rust 私聊流程 | `../awiki-cli-rs2/crates/im-core/src/messages/service.rs`、`internal/message_runtime/direct.rs`、`read.rs` |
 | Rust CLI 私聊 | `../awiki-cli-rs2/crates/awiki-cli/src/cli_shell/msg_handlers.rs` |
-| ANP Python SDK | `../anp/anp/anp/authentication/`、`../anp/anp/anp/proof/` |
+| ANP Python SDK | `anp.authentication`、`anp.proof` |
 | User Service 注册 | `../user-service/src/user_service/app/handle/`、`app/did_auth/` |
 | Message Service 私聊 | `../message-service/docs/api/ANP-client-server-api-direct.md` |
 
@@ -64,7 +64,7 @@
 - Handle 校验和 scoped OTP 使用 `POST /user-service/handle/rpc`；
 - OTP 方法为 `send_otp`，purpose 固定为 `awiki.identity.register.v1`；
 - DID 注册使用 `POST /user-service/did-auth/rpc` 的 `register`；
-- 必须使用 `../anp/anp` 的 Python API 生成 DID、Manifest 和 W3C proof，不复制密码学实现；
+- 必须使用 `anp` 包的公开 Python API 生成 DID、Manifest 和 W3C proof，不复制密码学实现；
 - User Service 要求 one-device Manifest 时，只生成一个本机设备。Manifest 是 wire 兼容要求，不代表 CLI 支持多设备；
 - User Service 当前注册校验器要求 Manifest 使用固定的六项 canonical profile bundle；
   因此 Manifest 会包含 Direct/Group E2EE profile 标识。它们只是服务端注册兼容字段，
@@ -227,7 +227,7 @@ access token 是可撤销、可过期的会话秘密，不等同于长期私钥�
 
 ### Step 03：ANP 身份与 proof adapter
 
-任务：用本地 `anp==0.9.1` 生成 DID WBA、协议要求的 one-device Manifest、W3C document proof 和 RFC 9421 origin proof；私钥只以加密 PKCS#8 落盘，对外只暴露首版所需的窄接口。
+任务：用 PyPI `anp==0.9.2` 生成 DID WBA、协议要求的 one-device Manifest、W3C document proof 和 RFC 9421 origin proof；私钥只以加密 PKCS#8 落盘，对外只暴露首版所需的窄接口。
 
 验收：生成文档通过 ANP SDK 自校验和 User Service schema；Manifest profile 精确匹配服务端
 canonical bundle，但运行时不提供 E2EE/Group 能力；私钥文件无法在无口令时加载，磁盘扫描不存在明文 key material；代码中没有自写协议签名或 canonical JSON。

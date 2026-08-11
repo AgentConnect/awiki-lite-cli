@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "AgentConnect" }]
 dependencies = [
-    "anp==0.9.1",
+    "anp==0.9.2",
     "cryptography>=45,<47",
     "httpx>=0.28,<1.0",
     "platformdirs>=4.3,<5.0",
@@ -26,9 +26,6 @@ dev = [
     "pytest-asyncio>=0.24,<2.0",
     "ruff>=0.12,<1.0",
 ]
-
-[tool.uv.sources]
-anp = { path = "../anp/anp", editable = true }
 
 [build-system]
 requires = ["hatchling>=1.27"]

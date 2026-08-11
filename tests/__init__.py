@@ -1,0 +1,1 @@
+"""AWiki Lite CLI tests."""

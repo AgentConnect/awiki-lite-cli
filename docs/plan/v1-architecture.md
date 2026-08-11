@@ -5,7 +5,7 @@
 
 ## 1. 背景与目标
 
-现有 Rust 仓库 `../awiki-cli-rs2` 已覆盖 daemon、多设备、身份恢复、E2EE、本地数据库、邮件和运行时插件等完整产品能力，学习成本和维护面都较大。本项目用 Python 提供一个可阅读、可安装、可脚本化的最小客户端，复用现有 User Service、Message Service 和 `../anp/anp` Python SDK，不复制完整客户端内核。
+现有 Rust 仓库 `../awiki-cli-rs2` 已覆盖 daemon、多设备、身份恢复、E2EE、本地数据库、邮件和运行时插件等完整产品能力，学习成本和维护面都较大。本项目用 Python 提供一个可阅读、可安装、可脚本化的最小客户端，复用现有 User Service、Message Service 和 PyPI 发布的 `anp` Python SDK，不复制完整客户端内核。
 
 v1 的成功标准只有四项：
 
@@ -18,7 +18,7 @@ v1 的成功标准只有四项：
 
 ## 2. 外部契约与设计依据
 
-- ANP SDK：`../anp/anp`，使用 DID WBA、one-device Manifest、W3C proof 和 RFC 9421 origin proof 能力。
+- ANP SDK：PyPI `anp` 包，使用 DID WBA、one-device Manifest、W3C proof 和 RFC 9421 origin proof 能力。
 - 注册：User Service `POST /user-service/handle/rpc` 的 `send_otp`，以及 `POST /user-service/did-auth/rpc` 的 `register`。
 - 私聊：Message Service `/im/rpc` 的 `direct.send`、`inbox.get`、`direct.get_history`。
 - 群聊：`group.create`、`group.add`、`group.send`、`group.list_messages`。
@@ -46,7 +46,7 @@ awiki-lite-cli/
 
 | 依赖 | 用途 | 约束 |
 |---|---|---|
-| `anp==0.9.1` | DID、Manifest、proof、协议常量 | `uv` 强制映射到 `../anp/anp` editable 源码 |
+| `anp==0.9.2` | DID、Manifest、proof、协议常量 | 从 PyPI 锁定安装 |
 | `typer` | 类型化命令和子命令 | CLI 层专用 |
 | `httpx` | 复用连接的异步 RPC、流式下载 | 基础设施层专用 |
 | `platformdirs` | 跨平台状态目录 | 不存储到仓库目录 |
@@ -123,7 +123,7 @@ awiki-lite attachment download <MESSAGE_ID> <ATTACHMENT_ID>
 ## 8. 风险与控制
 
 - 服务端契约仍在演进：payload builder 集中在 infrastructure adapter，并用冻结 fixture 做契约测试。
-- 本地 path source 不适合独立 CI clone：CI 在实现阶段同时 checkout `agent-network-protocol/anp` 的匹配 revision，发布时再验证 PyPI `anp==0.9.1` 等价性。
+- CI 和本地开发均从 PyPI 锁定安装 `anp==0.9.2`，避免依赖相邻仓库的目录布局或未记录的源码 revision。
 - 无恢复是产品取舍，不是遗漏：首次注册必须提示备份不受支持，v1 不提供任何“看似恢复”的命令。
 - 附件可能较大：禁止一次性读入内存；上传、下载、摘要计算均使用流式处理和明确大小上限。
 

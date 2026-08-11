@@ -1,4 +1,4 @@
-"""Narrow adapter around the sibling ANP Python SDK."""
+"""Narrow adapter around the ANP Python SDK."""
 
 from __future__ import annotations
 

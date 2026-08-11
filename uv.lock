@@ -186,8 +186,8 @@ wheels = [
 
 [[package]]
 name = "anp"
-version = "0.9.1"
-source = { editable = "../anp/anp" }
+version = "0.9.2"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "asn1crypto" },
@@ -204,29 +204,10 @@ dependencies = [
     { name = "websockets", version = "16.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "websockets", version = "17.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp", specifier = ">=3.10.10" },
-    { name = "asn1crypto", specifier = ">=1.5.1" },
-    { name = "base58", specifier = ">=2.1.1" },
-    { name = "canonicaljson", specifier = ">=2.0.0" },
-    { name = "cryptography", specifier = ">=43.0.3" },
-    { name = "ecdsa", specifier = ">=0.19.0" },
-    { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.115.4,<1.0.0" },
-    { name = "jcs", specifier = ">=0.2.1" },
-    { name = "jsonschema", specifier = ">=4.23.0" },
-    { name = "openai", marker = "extra == 'api'", specifier = ">=1.54.3" },
-    { name = "pydantic", specifier = ">=2.9.2,<3.0.0" },
-    { name = "pyjwt", specifier = ">=2.9.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "python-dotenv", specifier = ">=1.0.1" },
-    { name = "requests", specifier = ">=2.32.3" },
-    { name = "uvicorn", marker = "extra == 'api'", specifier = ">=0.32.0,<1.0.0" },
-    { name = "websockets", specifier = ">=13.1" },
+sdist = { url = "https://files.pythonhosted.org/packages/34/63/47760819f27bea23de296c081e18d80836f40c678af5fa0da01e690c08c7/anp-0.9.2.tar.gz", hash = "sha256:0fe2735c055b95f3bc4d16b90c0c148079d9ba4ab51b5cb13bf188a837fe708e", size = 207295, upload-time = "2026-08-06T12:21:21.452Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/82/7e/727161b6fce3d028b81ae686f3cb2086c379ff6987fd59938925cb6845f2/anp-0.9.2-py3-none-any.whl", hash = "sha256:5b2c2f7552ada3674b1fe2aad925ab3edac8a158837d7ae4443907a4405cbf32", size = 265409, upload-time = "2026-08-06T12:21:46.422Z" },
 ]
-provides-extras = ["api", "dev"]
 
 [[package]]
 name = "anyio"
@@ -294,7 +275,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anp", editable = "../anp/anp" },
+    { name = "anp", specifier = "==0.9.2" },
     { name = "cryptography", specifier = ">=45,<47" },
     { name = "httpx", specifier = ">=0.28,<1.0" },
     { name = "platformdirs", specifier = ">=4.3,<5.0" },

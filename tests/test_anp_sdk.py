@@ -14,7 +14,7 @@ from awiki_lite_cli.infrastructure.anp_sdk import (
 
 def test_sdk_runtime_surface_excludes_e2ee_and_includes_v02_plain_profiles() -> None:
     info = sdk_info()
-    assert info.version == "0.9.1"
+    assert info.version == "0.9.2"
     assert all("e2ee" not in profile for profile in info.allowed_profiles)
     assert "anp.group.base.v1" in info.allowed_profiles
     assert ATTACHMENT_PROFILE in info.allowed_profiles
