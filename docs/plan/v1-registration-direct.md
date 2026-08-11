@@ -95,16 +95,16 @@
 ## 5. 用户命令面
 
 ```text
-awiki-lite register [--handle HANDLE] [--phone PHONE]
-awiki-lite dm send <RECIPIENT_DID> <TEXT>
-awiki-lite dm inbox [--limit N] [--mark-read]
-awiki-lite dm history <PEER_DID> [--limit N]
+awiki-lite id register [--handle HANDLE] [--phone PHONE]
+awiki-lite msg send --to <RECIPIENT_DID> --text <TEXT>
+awiki-lite msg inbox [--limit N] [--mark-read]
+awiki-lite msg history --with <PEER_DID> [--limit N]
 ```
 
 固定行为：
 
 - 缺少 Handle、手机号或 OTP 时交互式提示；通过参数提供时适合自动化测试；
-- `dm` 命令在未注册时退出非零并提示先执行 `awiki-lite register`；
+- `msg` 命令在未注册时退出非零并提示先执行 `awiki-lite id register`；
 - 收件箱默认只读，只有显式 `--mark-read` 才调用 `inbox.mark_read`；
 - recipient 只接受 DID，不在首版隐式执行 Handle lookup；
 - human output 不打印原始 token、proof、完整私钥路径或服务器内部响应；
@@ -246,13 +246,13 @@ canonical bundle，但运行时不提供 E2EE/Group 能力；私钥文件无法�
 
 ### Step 06：私聊发送
 
-任务：实现 `dm send`，生成并持久保留本次逻辑发送的幂等 ID，区分明确拒绝、可重试网络失败和结果未知的超时。
+任务：实现 `msg send --to`，生成并持久保留本次逻辑发送的幂等 ID，区分明确拒绝、可重试网络失败和结果未知的超时。
 
 验收：两个测试身份同域和允许时的跨域发送成功；超时重试不产生重复消息；401、目标 DID 无效、origin proof 无效均返回稳定、脱敏错误。
 
 ### Step 07：收件箱、已读与历史
 
-任务：实现 `dm inbox`、可选 `--mark-read` 和 `dm history`，正确处理分页、空结果、消息排序和文本投影。
+任务：实现 `msg inbox`、可选 `--mark-read` 和 `msg history`，正确处理分页、空结果、消息排序和文本投影。
 
 验收：离线接收方能拉取消息；默认查看不改变已读状态；显式标记后消息从默认 inbox 消失；history 能看到双方文本且不混入群聊/E2EE 数据。
 
@@ -324,7 +324,7 @@ uv run python scripts/remote_e2e.py --target awiki-info-testing
 | 03 ANP adapter | done | one-device identity/document/origin proof adapter | `tests/test_anp_sdk.py` |
 | 04 注册 | done | scoped OTP、注册、response-loss staged retry | `tests/test_registration.py` |
 | 05 Direct 契约 | done | Bearer、能力预检、plain payload/read builders、error boundary | `tests/test_message_service.py` |
-| 06 私聊发送 | done | `dm send` 与跨进程完全同 payload 幂等重建 | 单元测试与远程幂等重放 |
+| 06 私聊发送 | done | `msg send --to` 与跨进程完全同 payload 幂等重建 | 单元测试与远程幂等重放 |
 | 07 私聊读取 | done | inbox/显式 mark-read/history 与 E2EE 过滤 | `tests/test_message_workflows.py` |
 | 08 发布门禁 | done | README、可重复远程 E2E、build 与本地门禁 | 35 pytest；远程 A/B 双向消息、已读、history、幂等重放通过 |
 

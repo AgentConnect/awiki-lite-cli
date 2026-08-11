@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
+from typing import Annotated, TypeVar
 
 import httpx
 import typer
@@ -24,7 +24,7 @@ T = TypeVar("T")
 
 
 @app.command("create")
-def create(name: str) -> None:
+def create(name: Annotated[str, typer.Option("--name")]) -> None:
     """Create a private admin-add group."""
 
     async def action(workflow: GroupWorkflow, store: SecureStateStore) -> GroupSummary:
@@ -37,8 +37,8 @@ def create(name: str) -> None:
 
 @app.command("list")
 def list_groups(
-    limit: int = typer.Option(20, min=1, max=100),
-    cursor: str | None = typer.Option(None),
+    limit: int = typer.Option(50, min=1, max=100),
+    cursor: str | None = typer.Option(None, hidden=True),
 ) -> None:
     """List ordinary groups visible to the current identity."""
     groups, next_cursor = _run(lambda workflow, _store: workflow.list_groups(limit, cursor))
@@ -47,8 +47,8 @@ def list_groups(
         typer.echo(f"Next cursor: {next_cursor}")
 
 
-@app.command("info")
-def info(group_did: str) -> None:
+@app.command("get")
+def info(group_did: Annotated[str, typer.Option("--group")]) -> None:
     """Show one ordinary group's profile and current membership summary."""
     group = _run(lambda workflow, _store: workflow.info(group_did))
     _render_groups([group])
@@ -56,9 +56,9 @@ def info(group_did: str) -> None:
 
 @app.command("members")
 def members(
-    group_did: str,
-    limit: int = typer.Option(20, min=1, max=100),
-    cursor: str | None = typer.Option(None),
+    group_did: Annotated[str, typer.Option("--group")],
+    limit: int = typer.Option(100, min=1, max=100),
+    cursor: str | None = typer.Option(None, hidden=True),
 ) -> None:
     """List active membership records for one group."""
     rows, next_cursor = _run(lambda workflow, _store: workflow.members(group_did, limit, cursor))
@@ -68,7 +68,10 @@ def members(
 
 
 @app.command("add")
-def add(group_did: str, member_did: str) -> None:
+def add(
+    group_did: Annotated[str, typer.Option("--group")],
+    member_did: Annotated[str, typer.Option("--member")],
+) -> None:
     """Add one exact DID as a member."""
 
     async def action(workflow: GroupWorkflow, store: SecureStateStore) -> str:
@@ -79,7 +82,6 @@ def add(group_did: str, member_did: str) -> None:
     typer.echo(f"Added {added} to {group_did}")
 
 
-@app.command("send")
 def send(
     group_did: str,
     text: str | None = typer.Argument(None),
@@ -103,9 +105,9 @@ def send(
 
 @app.command("messages")
 def messages(
-    group_did: str,
-    limit: int = typer.Option(20, min=1, max=100),
-    since_seq: int | None = typer.Option(None, "--since-seq", min=0),
+    group_did: Annotated[str, typer.Option("--group")],
+    limit: int = typer.Option(50, min=1, max=100),
+    since_seq: int | None = typer.Option(None, "--since-seq", min=0, hidden=True),
 ) -> None:
     """Read ordinary Group Base messages after an optional group-local sequence."""
     rows, next_since_seq = _run(
@@ -136,7 +138,7 @@ def _run(action: Callable[[GroupWorkflow, SecureStateStore], Awaitable[T]]) -> T
         raise typer.Exit(2) from None
     except JsonRpcFailure as exc:
         if exc.code in {401, 1401} or "unauthorized" in exc.message.lower():
-            typer.echo("Session expired; run `awiki-lite session refresh`.", err=True)
+            typer.echo("Session expired; run `awiki-lite id refresh-token`.", err=True)
         else:
             typer.echo(f"Group service rejected the request (JSON-RPC code {exc.code}).", err=True)
         raise typer.Exit(1) from None

@@ -20,42 +20,42 @@ The default services are at `https://awiki.info`. Tests may explicitly override
 ## Commands
 
 ```bash
-uv run awiki-lite register --handle alice --phone +15555550100
-uv run awiki-lite dm send 'did:wba:example.com:user:bob:e1_...' 'hello'
-uv run awiki-lite dm inbox --limit 20
-uv run awiki-lite dm history 'did:wba:example.com:user:bob:e1_...' --limit 20
+uv run awiki-lite id register --handle alice --phone +15555550100
+uv run awiki-lite msg send --to 'did:wba:example.com:user:bob:e1_...' --text 'hello'
+uv run awiki-lite msg inbox --limit 20
+uv run awiki-lite msg history --with 'did:wba:example.com:user:bob:e1_...' --limit 20
 
-uv run awiki-lite group create 'Project room'
-uv run awiki-lite group add 'did:wba:...:group:...' 'did:wba:...:user:bob:...'
-uv run awiki-lite group send 'did:wba:...:group:...' 'hello group'
-uv run awiki-lite group messages 'did:wba:...:group:...' --since-seq 0
+uv run awiki-lite group create --name 'Project room'
+uv run awiki-lite group add --group 'did:wba:...:group:...' --member 'did:wba:...:user:bob:...'
+uv run awiki-lite msg send --group 'did:wba:...:group:...' --text 'hello group'
+uv run awiki-lite group messages --group 'did:wba:...:group:...'
 
-uv run awiki-lite attachment send ./report.pdf --to 'did:wba:...:user:bob:...'
-uv run awiki-lite attachment send ./report.pdf --group 'did:wba:...:group:...'
-uv run awiki-lite attachment download MESSAGE_ID ATTACHMENT_ID --output ./downloads
-uv run awiki-lite session refresh
+uv run awiki-lite msg send --to 'did:wba:...:user:bob:...' --file ./report.pdf
+uv run awiki-lite msg send --group 'did:wba:...:group:...' --file ./report.pdf
+uv run awiki-lite msg attachment download --message-id MESSAGE_ID --attachment-id ATTACHMENT_ID --output ./downloads
+uv run awiki-lite id refresh-token
 
 # Keep this foreground process running for real-time sync hints; Ctrl-C stops it.
-uv run awiki-lite listener run
+uv run awiki-lite runtime listener run
 # Emit one JSON event and exit, which is useful for scripts and connection checks.
-uv run awiki-lite listener run --once --json
+uv run awiki-lite runtime listener run --once --json
 
 # Install and manage the native platform service.
-uv run awiki-lite listener install
-uv run awiki-lite listener start
-uv run awiki-lite listener status --json
-uv run awiki-lite listener restart
-uv run awiki-lite listener stop
-uv run awiki-lite listener uninstall
+uv run awiki-lite runtime listener install
+uv run awiki-lite runtime listener start
+uv run awiki-lite runtime listener status --json
+uv run awiki-lite runtime listener restart
+uv run awiki-lite runtime listener stop
+uv run awiki-lite runtime listener uninstall
 ```
 
 For private text, avoid shell history and process arguments by using standard input:
 
 ```bash
-printf '%s' 'private message' | uv run awiki-lite dm send 'did:wba:...' --stdin
-printf '%s' 'private group message' | uv run awiki-lite group send 'did:wba:...' --stdin
-printf '%s' 'private caption' | uv run awiki-lite attachment send ./report.pdf \
-  --to 'did:wba:...' --caption-stdin
+printf '%s' 'private message' | uv run awiki-lite msg send --to 'did:wba:...' --stdin
+printf '%s' 'private group message' | uv run awiki-lite msg send --group 'did:wba:...' --stdin
+printf '%s' 'private caption' | uv run awiki-lite msg send --to 'did:wba:...' \
+  --file ./report.pdf --stdin
 ```
 
 DID arguments are exact `did:wba` identifiers; Handle lookup is not implemented. Refresh the

@@ -54,12 +54,12 @@ def send(
 
 @app.command("download")
 def download(
-    message_id: str,
-    attachment_id: str,
-    output: Annotated[Path | None, typer.Option("--output")] = None,
+    message_id: Annotated[str, typer.Option("--message-id")],
+    attachment_id: Annotated[str, typer.Option("--attachment-id")],
+    output: Annotated[Path, typer.Option("--output")],
 ) -> None:
     """Download one attachment from a previously refreshed authenticated message."""
-    result = _run_download(message_id, attachment_id, output or Path.cwd())
+    result = _run_download(message_id, attachment_id, output)
     typer.echo(f"Downloaded attachment to {result}")
 
 
@@ -132,7 +132,7 @@ def _invoke_with_errors(store: SecureStateStore, invoke: Callable[[], Coroutine[
         raise typer.Exit(2) from None
     except JsonRpcFailure as exc:
         if exc.code in {401, 1401} or "unauthorized" in exc.message.lower():
-            typer.echo("Session expired; run `awiki-lite session refresh`.", err=True)
+            typer.echo("Session expired; run `awiki-lite id refresh-token`.", err=True)
         else:
             typer.echo(f"Attachment operation was rejected (JSON-RPC code {exc.code}).", err=True)
         raise typer.Exit(1) from None

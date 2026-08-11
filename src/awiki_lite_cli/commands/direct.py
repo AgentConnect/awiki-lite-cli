@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
+from typing import Annotated, TypeVar
 
 import httpx
 import typer
@@ -70,7 +70,12 @@ def send(
 @app.command("inbox")
 def inbox(
     limit: int = typer.Option(20, min=1, max=100),
-    skip: int = typer.Option(0, min=0, help="Skip messages from the start of the result set."),
+    skip: int = typer.Option(
+        0,
+        min=0,
+        help="Skip messages from the start of the result set.",
+        hidden=True,
+    ),
     mark_read: bool = typer.Option(False, "--mark-read", help="Mark displayed messages read."),
 ) -> None:
     """Read the local plain-message inbox."""
@@ -98,9 +103,14 @@ def inbox(
 
 @app.command("history")
 def history(
-    peer_did: str,
-    limit: int = typer.Option(20, min=1, max=100),
-    skip: int = typer.Option(0, min=0, help="Skip messages from the start of the result set."),
+    peer_did: Annotated[str, typer.Option("--with", help="Direct peer DID.")],
+    limit: int = typer.Option(50, min=1, max=100),
+    skip: int = typer.Option(
+        0,
+        min=0,
+        help="Skip messages from the start of the result set.",
+        hidden=True,
+    ),
 ) -> None:
     """Read plain-message history with one exact DID."""
 
@@ -133,7 +143,7 @@ def _run(action: Callable[[MessageService, SecureStateStore], Awaitable[T]]) -> 
         raise typer.Exit(2) from None
     except JsonRpcFailure as exc:
         if exc.code in {401, 1401} or "unauthorized" in exc.message.lower():
-            typer.echo("Session expired; run `awiki-lite session refresh`.", err=True)
+            typer.echo("Session expired; run `awiki-lite id refresh-token`.", err=True)
         else:
             typer.echo(
                 f"Message service rejected the request (JSON-RPC code {exc.code}).", err=True

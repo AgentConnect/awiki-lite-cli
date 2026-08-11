@@ -33,7 +33,7 @@ awiki-lite-cli/
 ├── docs/plan/                 # 架构、范围、里程碑和验收记录
 ├── src/awiki_lite_cli/
 │   ├── cli.py                 # Typer 根命令，只负责装配
-│   ├── commands/              # register/dm/group/attachment 参数与输出
+│   ├── commands/              # id/msg/group/runtime 参数与输出
 │   ├── application/           # 用例端口、编排和稳定错误模型
 │   ├── domain/                # 身份、消息、群和附件值对象
 │   └── infrastructure/        # ANP adapter、HTTP JSON-RPC、状态文件
@@ -72,16 +72,16 @@ User Service 当前要求新客户端提交 one-device Manifest。这里的 Mani
 ## 6. 命令面
 
 ```text
-awiki-lite register
-awiki-lite dm send <DID> <TEXT>
-awiki-lite dm inbox [--limit N]
-awiki-lite dm history <DID> [--limit N]
-awiki-lite group create <NAME>
-awiki-lite group add <GROUP_DID> <MEMBER_DID>
-awiki-lite group send <GROUP_DID> <TEXT>
-awiki-lite group messages <GROUP_DID> [--limit N]
-awiki-lite attachment send <FILE> (--to <DID> | --group <GROUP_DID>)
-awiki-lite attachment download <MESSAGE_ID> <ATTACHMENT_ID>
+awiki-lite id register
+awiki-lite msg send --to <DID> --text <TEXT>
+awiki-lite msg inbox [--limit N]
+awiki-lite msg history --with <DID> [--limit N]
+awiki-lite group create --name <NAME>
+awiki-lite group add --group <GROUP_DID> --member <MEMBER_DID>
+awiki-lite msg send --group <GROUP_DID> --text <TEXT>
+awiki-lite group messages --group <GROUP_DID> [--limit N]
+awiki-lite msg send (--to <DID> | --group <GROUP_DID>) --file <FILE>
+awiki-lite msg attachment download --message-id <MESSAGE_ID> --attachment-id <ATTACHMENT_ID> --output <DIR>
 ```
 
 `register` 是交互流程：校验 Handle → 发送 scoped OTP → 读取 OTP → 由 ANP SDK 生成并签名 DID/Manifest → 注册 → 保存状态。所有写操作生成稳定的 `operation_id`/`message_id`，同一次自动重试必须复用它们。读取采用显式命令和分页，不启动后台进程。
