@@ -13,9 +13,9 @@ Keep dependencies flowing from commands to application to domain. Infrastructure
 
 ## Build, Test, and Development Commands
 
-The project uses Python 3.10+ and `uv`. The sibling SDK must exist at `../anp/anp`.
+The project uses Python 3.10+ and `uv`.
 
-- `uv sync --group dev` installs the project and editable local ANP SDK.
+- `uv sync --group dev` installs the project and development dependencies.
 - `uv run awiki-lite --help` checks the CLI entry point.
 - `uv run pytest` runs the test suite.
 - `uv run ruff check .` and `uv run ruff format --check .` enforce style.

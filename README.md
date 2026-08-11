@@ -7,7 +7,7 @@ multi-file messages, resumable transfer, or reliable local sync projection.
 
 ## Setup
 
-Python 3.10+, `uv`, and the sibling ANP SDK at `../anp/anp` are required.
+Python 3.10+ and `uv` are required. The compatible ANP SDK is installed from PyPI.
 
 ```bash
 uv sync --group dev

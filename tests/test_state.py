@@ -14,6 +14,7 @@ from awiki_lite_cli.infrastructure.state import (
     SecureStateStore,
     StateError,
 )
+from tests.permission_assertions import assert_private_path
 
 
 def identity() -> IdentityState:
@@ -40,10 +41,10 @@ def test_state_encrypts_keys_and_round_trips(tmp_path: Path) -> None:
     unlocked = store.unlock("long passphrase value")
     assert unlocked.identity.did == identity().did
     assert unlocked.session.access_token == "fixture-token"
-    assert oct(store.root.stat().st_mode & 0o777) == "0o700"
+    assert_private_path(store.root, directory=True)
     for path in store.root.rglob("*"):
         if path.is_file():
-            assert oct(path.stat().st_mode & 0o777) == "0o600"
+            assert_private_path(path, directory=False)
             assert b"BEGIN PRIVATE KEY" not in path.read_bytes()
 
 
@@ -276,7 +277,7 @@ def test_attachment_context_index_round_trips_and_is_bounded(tmp_path: Path) -> 
     with pytest.raises(StateError, match="unavailable"):
         store.load_attachment_context("message-1", "attachment-1")
     path = store.root / "attachment-contexts.json"
-    assert path.stat().st_mode & 0o777 == 0o600
+    assert_private_path(path, directory=False)
     raw = path.read_text()
     for forbidden in ("download_ticket", "upload_headers", "commit_token"):
         assert forbidden not in raw

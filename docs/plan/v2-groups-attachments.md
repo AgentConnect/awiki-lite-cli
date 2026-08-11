@@ -50,7 +50,7 @@ v0.2 在不扩大身份与同步模型的前提下增加两类能力：
 | Rust 普通群编排 | `../awiki-cli-rs2/crates/im-core/src/internal/group_runtime/`、`internal/wire/group.rs` |
 | Rust 附件编排 | `../awiki-cli-rs2/crates/im-core/src/internal/attachment_runtime/`、`internal/wire/attachment.rs` |
 | 现有服务 E2E | `../awiki-system-test/tests_v2/message_service/test_group_local.py`、`test_attachment_local.py` |
-| ANP proof | `../anp/anp/anp/proof/` |
+| ANP proof | `anp.proof` |
 
 冲突时以 Message Service 当前 validator 和公开 API 文档为准；Rust CLI 只作为编排、错误恢复和文件安全参考。
 

@@ -169,6 +169,9 @@ def test_prepare_file_accepts_empty_and_rejects_unsafe_or_changed_files(tmp_path
     with pytest.raises(ValueError, match="regular file"):
         prepare_file(link, 100)
 
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO is unavailable")
+def test_prepare_file_rejects_fifo(tmp_path: Path) -> None:
     fifo = tmp_path / "pipe"
     os.mkfifo(fifo)
     with pytest.raises(ValueError, match="regular file"):

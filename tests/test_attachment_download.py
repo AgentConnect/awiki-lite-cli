@@ -1,7 +1,6 @@
 import base64
 import hashlib
 import json
-import stat
 from pathlib import Path
 
 import httpx
@@ -27,6 +26,7 @@ from awiki_lite_cli.infrastructure.group_service import GroupService
 from awiki_lite_cli.infrastructure.message_service import MessageService
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
+from tests.permission_assertions import assert_private_path
 
 SERVICE_DID = "did:wba:message.example.test"
 
@@ -151,7 +151,7 @@ async def test_direct_and_group_download_ticket_and_verified_atomic_publish(
         )
     assert published == output / "download.txt"
     assert published.read_bytes() == raw
-    assert stat.S_IMODE(published.stat().st_mode) == 0o600
+    assert_private_path(published, directory=False)
     assert list(output.iterdir()) == [published]
     assert seen_target == SERVICE_DID
     assert ticket_value not in repr(DownloadTicket(ticket_value, "2099-01-01T00:00:00Z"))
