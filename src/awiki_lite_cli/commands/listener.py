@@ -78,7 +78,7 @@ def run(
         typer.echo("Listener stopped.", err=json_output)
     except ListenerAuthenticationError:
         typer.echo(
-            "Listener session expired; run `awiki-lite session refresh`, then restart it.",
+            "Listener session expired; run `awiki-lite id refresh-token`, then restart it.",
             err=True,
         )
         if service_mode:

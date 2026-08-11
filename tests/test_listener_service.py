@@ -42,7 +42,7 @@ def test_systemd_unit_is_user_scoped_and_contains_no_credentials(tmp_path: Path)
     manager = SystemdUserManager(context(tmp_path), FakeRunner())
     unit = manager.unit_content()
     assert "WantedBy=default.target" in unit
-    assert "listener run --service-mode" in unit
+    assert "runtime listener run --service-mode" in unit
     assert "AWIKI_LITE_STATE_DIR" in unit
     assert "AWIKI_MESSAGE_SERVICE_URL" in unit
     assert "Bearer" not in unit
@@ -64,7 +64,7 @@ def test_launchagent_plist_uses_argument_array_and_nonsecret_environment(tmp_pat
     manager = LaunchAgentManager(context(tmp_path), FakeRunner())
     value = plistlib.loads(manager.plist_content())
     assert value["Label"] == SERVICE_NAME
-    assert value["ProgramArguments"][-3:] == ["listener", "run", "--service-mode"]
+    assert value["ProgramArguments"][-4:] == ["runtime", "listener", "run", "--service-mode"]
     assert value["KeepAlive"] == {"SuccessfulExit": False}
     assert value["EnvironmentVariables"] == {
         "AWIKI_LITE_STATE_DIR": str(context(tmp_path).state_dir),
@@ -96,7 +96,7 @@ def test_windows_service_command_binds_explicit_interpreter_and_state(tmp_path: 
     manager = WindowsTaskManager(context(tmp_path), FakeRunner([(1, "")]))
     command = manager._service_command()
     assert "awiki_lite_cli" in command
-    assert "listener run --service-mode" in command
+    assert "runtime listener run --service-mode" in command
     assert str(context(tmp_path).state_dir) in command
     assert "https://messages.example" in command
     assert "Bearer" not in command

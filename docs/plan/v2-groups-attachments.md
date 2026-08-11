@@ -85,23 +85,23 @@ v0.2 在不扩大身份与同步模型的前提下增加两类能力：
 ## 5. 命令面
 
 ```text
-awiki-lite group create <NAME>
+awiki-lite group create --name <NAME>
 awiki-lite group list [--limit N] [--cursor CURSOR]
-awiki-lite group info <GROUP_DID>
-awiki-lite group members <GROUP_DID> [--limit N] [--cursor CURSOR]
-awiki-lite group add <GROUP_DID> <MEMBER_DID>
-awiki-lite group send <GROUP_DID> <TEXT>
-awiki-lite group messages <GROUP_DID> [--limit N] [--since-seq N]
+awiki-lite group get --group <GROUP_DID>
+awiki-lite group members --group <GROUP_DID> [--limit N]
+awiki-lite group add --group <GROUP_DID> --member <MEMBER_DID>
+awiki-lite msg send --group <GROUP_DID> --text <TEXT>
+awiki-lite group messages --group <GROUP_DID> [--limit N]
 
-awiki-lite attachment send <FILE> (--to <DID> | --group <GROUP_DID>) [--caption TEXT]
-awiki-lite attachment download <MESSAGE_ID> <ATTACHMENT_ID> [--output DIR]
+awiki-lite msg send (--to <DID> | --group <GROUP_DID>) --file <FILE> [--text <CAPTION>]
+awiki-lite msg attachment download --message-id <MESSAGE_ID> --attachment-id <ATTACHMENT_ID> --output <DIR>
 ```
 
 固定 UX：
 
 - 所有 DID 参数必须是精确 `did:wba`；不隐式做 Handle lookup；
 - 需要签名时按次提示本地私钥口令，读取命令不解锁私钥；
-- `attachment send` 必须且只能选择 direct 或 group target；
+- `msg send --file` 必须且只能选择 direct 或 group target；
 - 下载前必须已通过 inbox/history/group messages 取得该消息的权威 Manifest 上下文，否则提示用户先刷新对应消息列表；
 - 默认使用 Manifest 的安全 basename，拒绝绝对路径、`..`、NUL、目录穿越、symlink 目标和已有文件；v0.2 不提供 overwrite；
 - 成功退出 `0`，输入错误退出 `2`，认证/远端/完整性失败退出统一非零业务码；
