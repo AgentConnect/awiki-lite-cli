@@ -21,6 +21,17 @@ The project uses Python 3.10+ and `uv`.
 - `uv run ruff check .` and `uv run ruff format --check .` enforce style.
 - `uv run mypy src` performs strict type checking; `uv build` verifies packaging.
 
+A parallel TypeScript package lives in `typescript/` (`@awiki/lite-cli`, binary `awiki-lite-ts`). There is no root npm/pnpm workspace. The sibling ANP TypeScript SDK is a `file:` dependency at `../../anp/anp/typescript/ts_sdk` and its `dist/` is gitignored, so build it first:
+
+```bash
+(cd ../anp/anp/typescript/ts_sdk && npm ci && npm run build)
+(cd typescript && pnpm install && pnpm test && pnpm exec awiki-lite-ts --help)
+```
+
+CI also has an `interop-lock` job that runs `tests/lock_holder.py` against `typescript/tests/interop/lock.test.ts`. The TypeScript default state directory remains `awiki-lite-cli-ts` until both lock directions are proven. Switch listener language with a fresh `listener install`.
+
+Use Node 20.11+ and pnpm 9.15.x (`packageManager` in `typescript/package.json`). `uv build` remains a Python-only wheel of `src/awiki_lite_cli`.
+
 ## Coding Style & Naming Conventions
 
 Use four-space indentation, Ruff formatting, and complete type annotations. Name Python modules and functions with `snake_case`, classes with `PascalCase`, and CLI commands/flags with `kebab-case`. Keep modules small and public behavior documented. Do not duplicate identity, proof, or cryptographic logic already provided by the ANP SDK.

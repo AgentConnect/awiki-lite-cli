@@ -14,8 +14,41 @@ uv sync --group dev
 uv run awiki-lite --help
 ```
 
+## TypeScript CLI / TypeScript 命令行
+
+`typescript/` ships a parallel client (`awiki-lite-ts`) that matches the Python 0.2
+command surface except that the listener is a separate runtime. Build the sibling
+ANP TypeScript SDK first (`dist/` is gitignored), then install Lite:
+
+```bash
+(cd ../anp/anp/typescript/ts_sdk && npm ci && npm run build)
+(cd typescript && pnpm install && pnpm exec awiki-lite-ts --help)
+```
+
+```text
+pnpm exec awiki-lite-ts register --handle alice --phone +15555550100
+pnpm exec awiki-lite-ts session refresh
+pnpm exec awiki-lite-ts dm send 'did:wba:...' 'hello'
+pnpm exec awiki-lite-ts group create 'Project room'
+pnpm exec awiki-lite-ts attachment send ./report.pdf --to 'did:wba:...'
+pnpm exec awiki-lite-ts listener run
+```
+
+Reinstall the listener after switching languages; the service name is shared
+(`com.agentconnect.awiki-lite-listener`, last-writer-wins). Set
+`AWIKI_LITE_STATE_DIR` to share one identity directory explicitly.
+
+TypeScript 版本与 Python 0.2 命令面对齐（listener 单独声明）。先构建 sibling
+ANP TS SDK，再在 `typescript/` 里 `pnpm install`。切换语言后必须重新
+`listener install`。
+
 The default services are at `https://awiki.info`. Tests may explicitly override
 `AWIKI_USER_SERVICE_URL`, `AWIKI_MESSAGE_SERVICE_URL`, and `AWIKI_LITE_STATE_DIR`.
+Use `AWIKI_LITE_CA_BUNDLE` to trust an explicit private CA when connecting to a local or
+self-hosted Open Server; TLS verification remains enabled.
+For an explicitly trusted local/private attachment data plane, also set
+`AWIKI_LITE_ALLOW_PRIVATE_NETWORK=1`. This weakens the default SSRF boundary and must not be used
+for untrusted service endpoints.
 
 ## Commands
 

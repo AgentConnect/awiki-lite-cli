@@ -11,3 +11,6 @@ build/
 *.egg-info/
 .env
 .awiki-lite/
+typescript/node_modules/
+typescript/dist/
+*.tsbuildinfo

@@ -1,0 +1,116 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  ANP_REPOSITORY: agent-network-protocol/anp
+  ANP_SHA: d3cc6a9571cec9b7d53dfbc5ef5612e56d1d5ea9
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Lite CLI
+        uses: actions/checkout@v4
+        with:
+          path: awiki-lite-cli
+      - name: Checkout sibling ANP SDK
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ANP_REPOSITORY }}
+          ref: ${{ env.ANP_SHA }}
+          path: anp/anp
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install, lint, typecheck, test, and build
+        working-directory: awiki-lite-cli
+        run: |
+          uv sync --group dev
+          uv run ruff check .
+          uv run mypy src
+          uv run pytest
+          uv build
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Lite CLI
+        uses: actions/checkout@v4
+        with:
+          path: awiki-lite-cli
+      - name: Checkout sibling ANP SDK
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ANP_REPOSITORY }}
+          ref: ${{ env.ANP_SHA }}
+          path: anp/anp
+      - name: Assert sibling TypeScript SDK layout
+        run: test -f anp/anp/typescript/ts_sdk/package.json
+      - name: Set up Node 20.11
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.11"
+      - name: Set up pnpm 9.15
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - name: Build sibling ANP TypeScript SDK
+        working-directory: anp/anp/typescript/ts_sdk
+        run: |
+          npm ci
+          npm run build
+      - name: Install, typecheck, test, and build Lite TypeScript
+        working-directory: awiki-lite-cli/typescript
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm test
+          pnpm build
+
+  interop-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Lite CLI
+        uses: actions/checkout@v4
+        with:
+          path: awiki-lite-cli
+      - name: Checkout sibling ANP SDK
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ANP_REPOSITORY }}
+          ref: ${{ env.ANP_SHA }}
+          path: anp/anp
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+      - name: Set up Node 20.11
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.11"
+      - name: Set up pnpm 9.15
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - name: Build sibling ANP TypeScript SDK
+        working-directory: anp/anp/typescript/ts_sdk
+        run: |
+          npm ci
+          npm run build
+      - name: Install both runtimes and run lock interop
+        working-directory: awiki-lite-cli
+        env:
+          AWIKI_LITE_STATE_DIR: ${{ runner.temp }}/awiki-lock
+        run: |
+          uv sync --group dev
+          (cd typescript && pnpm install --frozen-lockfile)
+          mkdir -p "$AWIKI_LITE_STATE_DIR"
+          (cd typescript && pnpm exec vitest --run tests/interop/lock.test.ts)

@@ -105,7 +105,9 @@ def test_finalize_failure_never_publishes_half_identity(tmp_path: Path, monkeypa
 def test_corrupt_state_and_parent_symlink_are_rejected(tmp_path: Path) -> None:
     store = SecureStateStore(tmp_path / "state")
     store.initialize()
-    (store.root / "identity.json").write_text("not json")
+    identity_path = store.root / "identity.json"
+    identity_path.write_text("not json")
+    identity_path.chmod(0o600)
     with pytest.raises(StateError, match="invalid"):
         store.load_public()
 
