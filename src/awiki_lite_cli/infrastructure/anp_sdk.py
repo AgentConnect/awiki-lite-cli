@@ -214,13 +214,13 @@ async def resolve_attachment_service_did(
         finally:
             if owns_client:
                 await active_client.aclose()
-        _verify_resolved_document(sender_did, document)
+        verify_resolved_document(sender_did, document)
     except Exception:
         raise RuntimeError("unable to resolve the attachment sender DID document") from None
     return select_attachment_service_did(sender_did, document)
 
 
-def _verify_resolved_document(sender_did: str, document: Any) -> None:
+def verify_resolved_document(sender_did: str, document: Any) -> None:
     if not isinstance(document, dict) or document.get("id") != sender_did:
         raise ValueError("DID document ID mismatch")
     if not validate_did_document_binding(document, verify_proof=True):

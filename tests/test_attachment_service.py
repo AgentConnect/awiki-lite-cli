@@ -170,6 +170,16 @@ def test_prepare_file_accepts_empty_and_rejects_unsafe_or_changed_files(tmp_path
         prepare_file(link, 100)
 
 
+def test_prepare_file_reads_control_z_as_binary_data(tmp_path: Path) -> None:
+    path = tmp_path / "binary.bin"
+    content = bytes(range(256))
+    path.write_bytes(content)
+
+    with prepare_file(path, len(content)) as prepared:
+        assert prepared.size == len(content)
+        assert prepared.read(len(content)) == content
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO is unavailable")
 def test_prepare_file_rejects_fifo(tmp_path: Path) -> None:
     fifo = tmp_path / "pipe"

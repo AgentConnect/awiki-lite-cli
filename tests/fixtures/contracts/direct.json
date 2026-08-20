@@ -14,7 +14,7 @@
     "auth": {"scheme": "anp-rfc9421-origin-proof-v1", "origin_proof": "<redacted>"},
     "body": {"text": "hello"}
   },
-  "inbox": {"method": "inbox.get", "profile": "anp.inbox.local.v1"},
+  "inbox": {"methods": ["sync.delta", "sync.thread_after"], "profile": "anp.sync.local.v1"},
   "mark_read": {"method": "inbox.mark_read", "profile": "anp.inbox.local.v1"},
-  "history": {"method": "direct.get_history", "profile": "anp.direct.local.v1"}
+  "history": {"method": "sync.thread_after", "profile": "anp.sync.local.v1"}
 }

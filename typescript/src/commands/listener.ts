@@ -1,8 +1,13 @@
-import { basename } from 'node:path';
+import { basename } from "node:path";
 
-import { Command, Option } from 'commander';
+import { Command, Option } from "commander";
 
-import { listen, ListenerAuthenticationError, syncChangedToJson, websocketUrl } from '../infrastructure/listener.js';
+import {
+  listen,
+  ListenerAuthenticationError,
+  syncChangedToJson,
+  websocketUrl,
+} from "../infrastructure/listener.js";
 import {
   currentServiceContext,
   ListenerServiceError,
@@ -14,10 +19,12 @@ import {
   installListener,
   uninstallListener,
   type ListenerServiceStatus,
-} from '../infrastructure/listener-service.js';
-import { createRuntime, wrapMain } from './runtime.js';
+} from "../infrastructure/listener-service.js";
+import { createRuntime, wrapMain } from "./runtime.js";
 
-export function listenerRuntime(options: { stateDir?: string; messageServiceUrl?: string } = {}) {
+export function listenerRuntime(
+  options: { stateDir?: string; messageServiceUrl?: string } = {},
+) {
   const overrides: { stateDir?: string; messageServiceUrl?: string } = {};
   if (options.stateDir !== undefined) {
     overrides.stateDir = options.stateDir;
@@ -29,7 +36,7 @@ export function listenerRuntime(options: { stateDir?: string; messageServiceUrl?
 }
 
 export function runListenerServiceAction(
-  action: 'install' | 'start' | 'stop' | 'restart' | 'status' | 'uninstall',
+  action: "install" | "start" | "stop" | "restart" | "status" | "uninstall",
   options: {
     json?: boolean;
     stateDir?: string;
@@ -40,29 +47,36 @@ export function runListenerServiceAction(
 ): ListenerServiceStatus {
   const { settings, store } = listenerRuntime({
     ...(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}),
-    ...(options.messageServiceUrl !== undefined ? { messageServiceUrl: options.messageServiceUrl } : {}),
+    ...(options.messageServiceUrl !== undefined
+      ? { messageServiceUrl: options.messageServiceUrl }
+      : {}),
   });
-  const requireIdentity = options.requireIdentity ?? (action === 'install' || action === 'start' || action === 'restart');
+  const requireIdentity =
+    options.requireIdentity ??
+    (action === "install" || action === "start" || action === "restart");
   if (requireIdentity) {
     store.loadPublic();
     store.loadSession();
   }
-  const context = currentServiceContext(settings.stateDir, settings.messageServiceUrl);
+  const context = currentServiceContext(
+    settings.stateDir,
+    settings.messageServiceUrl,
+  );
   if (options.manager) {
     return options.manager[action]();
   }
   switch (action) {
-    case 'install':
+    case "install":
       return installListener(context);
-    case 'start':
+    case "start":
       return startListener(context);
-    case 'stop':
+    case "stop":
       return stopListener(context);
-    case 'restart':
+    case "restart":
       return restartListener(context);
-    case 'status':
+    case "status":
       return listenerStatus(context);
-    case 'uninstall':
+    case "uninstall":
       return uninstallListener(context);
     default: {
       const _never: never = action;
@@ -71,15 +85,20 @@ export function runListenerServiceAction(
   }
 }
 
-export function registerListenerCommand(root: Command): void {
-  const listener = root.command('listener').description('Run the authenticated WebSocket receiving helper.');
+export function registerListenerCommand(
+  root: Command,
+  options: { hidden?: boolean } = {},
+): void {
+  const listener = root
+    .command("listener", { hidden: options.hidden ?? false })
+    .description("Run the authenticated WebSocket receiving helper.");
   listener
-    .command('run')
-    .option('--once')
-    .option('--json')
-    .addOption(new Option('--service-mode').hideHelp())
-    .addOption(new Option('--state-dir <dir>').hideHelp())
-    .addOption(new Option('--message-service-url <url>').hideHelp())
+    .command("run")
+    .option("--once")
+    .option("--json")
+    .addOption(new Option("--service-mode").hideHelp())
+    .addOption(new Option("--state-dir <dir>").hideHelp())
+    .addOption(new Option("--message-service-url <url>").hideHelp())
     .action(
       (options: {
         once?: boolean;
@@ -88,15 +107,21 @@ export function registerListenerCommand(root: Command): void {
         stateDir?: string;
         messageServiceUrl?: string;
       }) => {
-        wrapMain('listener', async () => {
+        wrapMain("listener", async () => {
           const { settings, store } = listenerRuntime({
-            ...(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}),
-            ...(options.messageServiceUrl !== undefined ? { messageServiceUrl: options.messageServiceUrl } : {}),
+            ...(options.stateDir !== undefined
+              ? { stateDir: options.stateDir }
+              : {}),
+            ...(options.messageServiceUrl !== undefined
+              ? { messageServiceUrl: options.messageServiceUrl }
+              : {}),
           });
           const session = store.loadSession();
           const identity = store.loadPublic();
           if (!options.json) {
-            console.error(`Listening for ${identity.did} on ${websocketUrl(settings.messageServiceUrl)}`);
+            console.error(
+              `Listening for ${identity.did} on ${websocketUrl(settings.messageServiceUrl)}`,
+            );
           }
           try {
             await listen(
@@ -107,8 +132,12 @@ export function registerListenerCommand(root: Command): void {
                   console.log(syncChangedToJson(event));
                 } else {
                   const sequence =
-                    event.accountScanSeqHint !== null ? ` scan-seq=${event.accountScanSeqHint}` : '';
-                  console.log(`Changed domains=${event.domains.join(',')} reason=${event.reason}${sequence}`);
+                    event.accountScanSeqHint !== null
+                      ? ` scan-seq=${event.accountScanSeqHint}`
+                      : "";
+                  console.log(
+                    `Changed domains=${event.domains.join(",")} reason=${event.reason}${sequence}`,
+                  );
                 }
               },
               {
@@ -120,8 +149,10 @@ export function registerListenerCommand(root: Command): void {
             );
           } catch (error) {
             if (error instanceof ListenerAuthenticationError) {
-              const argv0 = basename(process.argv[1] ?? 'awiki-lite-ts');
-              console.error(`Listener session expired; run \`${argv0} session refresh\`, then restart it.`);
+              const argv0 = basename(process.argv[1] ?? "awiki-lite-ts");
+              console.error(
+                `Listener session expired; run \`${argv0} id refresh-token\`, then restart it.`,
+              );
               if (options.serviceMode) {
                 return;
               }
@@ -133,37 +164,40 @@ export function registerListenerCommand(root: Command): void {
       },
     );
 
-  listener.command('install').action(() => {
-    serviceAction('install');
+  listener.command("install").action(() => {
+    serviceAction("install");
   });
-  listener.command('uninstall').action(() => {
-    serviceAction('uninstall');
+  listener.command("uninstall").action(() => {
+    serviceAction("uninstall");
   });
-  listener.command('status').option('--json').action((options: { json?: boolean }) => {
-    serviceAction('status', options.json);
+  listener
+    .command("status")
+    .option("--json")
+    .action((options: { json?: boolean }) => {
+      serviceAction("status", options.json);
+    });
+  listener.command("start").action(() => {
+    serviceAction("start");
   });
-  listener.command('start').action(() => {
-    serviceAction('start');
+  listener.command("stop").action(() => {
+    serviceAction("stop");
   });
-  listener.command('stop').action(() => {
-    serviceAction('stop');
-  });
-  listener.command('restart').action(() => {
-    serviceAction('restart');
+  listener.command("restart").action(() => {
+    serviceAction("restart");
   });
 }
 
 function serviceAction(
-  action: 'install' | 'start' | 'stop' | 'restart' | 'status' | 'uninstall',
+  action: "install" | "start" | "stop" | "restart" | "status" | "uninstall",
   jsonOutput = false,
 ): void {
   try {
     const status = runListenerServiceAction(action);
-    if (action === 'status' && jsonOutput) {
+    if (action === "status" && jsonOutput) {
       console.log(JSON.stringify(status));
       return;
     }
-    if (action === 'status') {
+    if (action === "status") {
       console.log(`${status.platform} ${status.state}`);
       return;
     }

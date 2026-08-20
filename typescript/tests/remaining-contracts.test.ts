@@ -3,10 +3,11 @@ import { describe, expect, test } from 'vitest';
 import { parseManifest } from '../src/infrastructure/attachment-manifest.js';
 import { parseSyncChanged, websocketUrl } from '../src/infrastructure/listener.js';
 import { validatePendingInput } from '../src/infrastructure/state.js';
-import { defaultStateDir, DEFAULT_STATE_APPNAME } from '../src/config.js';
+import { defaultStateDir, DEFAULT_SERVICE_URL, DEFAULT_STATE_APPNAME } from '../src/config.js';
 
-describe('remaining cross-language contracts', () => {
-  test('default appname stays isolated until both lock directions are proven', () => {
+describe('remaining TypeScript contracts', () => {
+  test('default appname remains isolated from Python state', () => {
+    expect(DEFAULT_SERVICE_URL).toBe('https://awiki.ai');
     expect(DEFAULT_STATE_APPNAME).toBe('awiki-lite-cli-ts');
     expect(defaultStateDir(DEFAULT_STATE_APPNAME)).toContain('awiki-lite-cli-ts');
   });

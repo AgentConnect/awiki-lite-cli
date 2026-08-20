@@ -10,6 +10,7 @@ def test_settings_use_safe_remote_defaults(monkeypatch) -> None:
 
     settings = Settings.from_env()
 
+    assert DEFAULT_SERVICE_URL == "https://awiki.ai"
     assert settings.user_service_url == DEFAULT_SERVICE_URL
     assert settings.message_service_url == DEFAULT_SERVICE_URL
     assert settings.state_dir == Path("/tmp/awiki-lite-test-state")

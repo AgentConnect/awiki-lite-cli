@@ -48,18 +48,31 @@ class UserService:
     async def register(
         self, did_document: dict[str, Any], handle: str, phone: str, otp_code: str
     ) -> dict[str, Any]:
-        result = await call_json_rpc(
-            self.client,
-            self.base_url + "/user-service/did-auth/rpc",
-            "register",
-            {
-                "did_document": did_document,
-                "handle": handle,
-                "phone": phone,
-                "otp_code": otp_code,
+        endpoint = self.base_url + "/user-service/did-auth/rpc"
+        request_id = str(uuid4())
+        response = await self.client.post(
+            endpoint,
+            headers={
+                "Content-Type": "application/json",
+                "X-AWiki-Client-Version": CLIENT_IDENTIFIER,
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "register",
+                "params": {
+                    "did_document": did_document,
+                    "handle": handle,
+                    "phone": phone,
+                    "otp_code": otp_code,
+                },
             },
         )
-        return _object(result)
+        result = _object(decode_json_rpc_response(response, request_id))
+        token = _bearer_token(response.headers.get("Authorization"))
+        if token and not result.get("access_token"):
+            result = {**result, "access_token": token}
+        return result
 
     async def refresh_session(self, identity: IdentityState, signing_key: Any) -> str:
         """Obtain a bearer token with DID HTTP signatures, not the old bearer token."""
@@ -85,12 +98,9 @@ class UserService:
                 keyid=identity.verification_method,
             )
         )
-        result = _object(
-            decode_json_rpc_response(
-                await self.client.post(endpoint, headers=headers, content=body), request_id
-            )
-        )
-        token = result.get("access_token")
+        response = await self.client.post(endpoint, headers=headers, content=body)
+        result = _object(decode_json_rpc_response(response, request_id))
+        token = result.get("access_token") or _bearer_token(response.headers.get("Authorization"))
         if not isinstance(token, str) or not token.strip():
             raise RuntimeError("DID authentication returned no access token")
         if result.get("did") is not None and result.get("did") != identity.did:
@@ -102,3 +112,10 @@ def _object(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError("service returned an invalid result")
     return value
+
+
+def _bearer_token(value: str | None) -> str | None:
+    if value is None or not value.lower().startswith("bearer "):
+        return None
+    token = value[7:].strip()
+    return token or None

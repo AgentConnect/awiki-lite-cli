@@ -8,7 +8,7 @@ from pathlib import Path
 
 from platformdirs import user_state_path
 
-DEFAULT_SERVICE_URL = "https://awiki.info"
+DEFAULT_SERVICE_URL = "https://awiki.ai"
 
 
 @dataclass(frozen=True, slots=True)

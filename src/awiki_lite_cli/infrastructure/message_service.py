@@ -107,21 +107,32 @@ def build_direct_attachment_send(
     return {"meta": meta, "auth": {"scheme": ORIGIN_SCHEME, "origin_proof": proof}, "body": body}
 
 
-def build_inbox(did: str, limit: int, skip: int = 0) -> dict[str, Any]:
-    return _local_params("anp.inbox.local.v1", did, {"user_did": did, "limit": limit, "skip": skip})
-
-
 def build_mark_read(did: str, message_ids: list[str]) -> dict[str, Any]:
     if not message_ids or any(not value for value in message_ids):
         raise ValueError("message_ids must not be empty")
     return _local_params("anp.inbox.local.v1", did, {"user_did": did, "message_ids": message_ids})
 
 
-def build_history(did: str, peer_did: str, limit: int, skip: int = 0) -> dict[str, Any]:
-    return _local_params(
-        "anp.direct.local.v1",
+def build_sync_delta(did: str, since_event_seq: str, limit: int = 100) -> dict[str, Any]:
+    _validate_decimal_cursor(since_event_seq, "since_event_seq")
+    return _sync_params(
         did,
-        {"user_did": did, "peer_did": validate_did(peer_did), "limit": limit, "skip": skip},
+        {"user_did": did, "since_event_seq": since_event_seq, "limit": limit},
+    )
+
+
+def build_sync_thread_after(
+    did: str, peer_did: str, after_server_seq: str, limit: int = 100
+) -> dict[str, Any]:
+    _validate_decimal_cursor(after_server_seq, "after_server_seq")
+    return _sync_params(
+        did,
+        {
+            "user_did": did,
+            "thread": {"kind": "direct", "peer_did": validate_did(peer_did)},
+            "after_server_seq": after_server_seq,
+            "limit": limit,
+        },
     )
 
 
@@ -149,6 +160,27 @@ def _local_params(profile: str, did: str, body: dict[str, Any]) -> dict[str, Any
         "meta": {"profile": profile, "security_profile": "transport-protected", "sender_did": did},
         "body": body,
     }
+
+
+def _sync_params(did: str, body: dict[str, Any]) -> dict[str, Any]:
+    limit = body.get("limit")
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
+    return {
+        "meta": {
+            "profile": "anp.sync.local.v1",
+            "security_profile": "transport-protected",
+            "sender_did": did,
+            "operation_id": f"op-{uuid4()}",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        },
+        "body": body,
+    }
+
+
+def _validate_decimal_cursor(value: str, field: str) -> None:
+    if not value.isdecimal():
+        raise ValueError(f"{field} must be a non-negative decimal string")
 
 
 class MessageService:
@@ -292,15 +324,17 @@ class MessageService:
     async def inbox(
         self, identity: AuthenticatedIdentity | UnlockedIdentity, limit: int, skip: int = 0
     ) -> tuple[list[ChatMessage], bool]:
-        result = await call_json_rpc(
-            self.client,
-            self.endpoint,
-            "inbox.get",
-            build_inbox(identity.identity.did, limit, skip),
-            access_token=identity.session.access_token,
-        )
-        page = _object(result)
-        return _parse_page(page), _required_bool(page, "has_more", default=False)
+        peers = await self._direct_peers(identity)
+        messages: list[ChatMessage] = []
+        for peer in peers:
+            thread_messages, _ = await self._thread_messages(identity, peer, None)
+            messages.extend(
+                item for item in thread_messages if item.target_did == identity.identity.did
+            )
+        messages = list({item.message_id: item for item in messages}.values())
+        messages.sort(key=lambda item: (item.created_at or "", item.message_id), reverse=True)
+        end = skip + limit
+        return messages[skip:end], len(messages) > end
 
     async def mark_read(
         self, identity: AuthenticatedIdentity | UnlockedIdentity, ids: list[str]
@@ -325,33 +359,98 @@ class MessageService:
         limit: int,
         skip: int = 0,
     ) -> tuple[list[ChatMessage], bool]:
-        result = await call_json_rpc(
-            self.client,
-            self.endpoint,
-            "direct.get_history",
-            build_history(identity.identity.did, peer, limit, skip),
-            access_token=identity.session.access_token,
-        )
-        page = _object(result)
-        return _parse_page(page), _required_bool(page, "has_more", default=False)
+        messages, remote_has_more = await self._thread_messages(identity, peer, skip + limit + 1)
+        end = skip + limit
+        return messages[skip:end], remote_has_more or len(messages) > end
+
+    async def _direct_peers(self, identity: AuthenticatedIdentity | UnlockedIdentity) -> list[str]:
+        cursor = "0"
+        peers: set[str] = set()
+        while True:
+            page = _object(
+                await call_json_rpc(
+                    self.client,
+                    self.endpoint,
+                    "sync.delta",
+                    build_sync_delta(identity.identity.did, cursor),
+                    access_token=identity.session.access_token,
+                )
+            )
+            if _required_bool(page, "snapshot_required", default=False):
+                raise RuntimeError("message sync history is no longer available from the beginning")
+            events = page.get("events")
+            if not isinstance(events, list):
+                raise ProtocolResponseError("service returned an invalid sync event page")
+            for event in events:
+                payload = _object(event).get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                thread = payload.get("thread")
+                if not isinstance(thread, dict) or thread.get("kind") != "direct":
+                    continue
+                peer = thread.get("peer_did")
+                if not isinstance(peer, str):
+                    raise ProtocolResponseError("service returned an invalid direct thread")
+                try:
+                    peers.add(validate_did(peer))
+                except ValueError as exc:
+                    raise ProtocolResponseError(
+                        "service returned an invalid direct thread"
+                    ) from exc
+            if not _required_bool(page, "has_more", default=False):
+                return sorted(peers)
+            next_cursor = _required_str(page, "next_event_seq")
+            _validate_remote_cursor(next_cursor, "next_event_seq")
+            if int(next_cursor) <= int(cursor):
+                raise ProtocolResponseError("sync.delta did not advance its cursor")
+            cursor = next_cursor
+
+    async def _thread_messages(
+        self,
+        identity: AuthenticatedIdentity | UnlockedIdentity,
+        peer: str,
+        requested: int | None,
+    ) -> tuple[list[ChatMessage], bool]:
+        cursor = "0"
+        messages: list[ChatMessage] = []
+        has_more = False
+        while requested is None or len(messages) < requested:
+            page = _object(
+                await call_json_rpc(
+                    self.client,
+                    self.endpoint,
+                    "sync.thread_after",
+                    build_sync_thread_after(identity.identity.did, peer, cursor),
+                    access_token=identity.session.access_token,
+                )
+            )
+            messages.extend(_parse_page(page, identity.identity.did))
+            has_more = _required_bool(page, "has_more", default=False)
+            if not has_more:
+                break
+            next_cursor = _required_str(page, "next_after_server_seq")
+            _validate_remote_cursor(next_cursor, "next_after_server_seq")
+            if int(next_cursor) <= int(cursor):
+                raise ProtocolResponseError("sync.thread_after did not advance its cursor")
+            cursor = next_cursor
+        return messages, has_more
 
 
-def _parse_page(page: dict[str, Any]) -> list[ChatMessage]:
+def _parse_page(page: dict[str, Any], fallback_target: str | None = None) -> list[ChatMessage]:
     messages = page.get("messages")
     if not isinstance(messages, list):
         raise RuntimeError("service returned an invalid message page")
     output: list[ChatMessage] = []
     for item in messages:
         row = _object(item)
-        if row.get("type") == "attachment_manifest":
-            if row.get("content_type") != MANIFEST_CONTENT_TYPE:
-                raise RuntimeError("service returned an invalid attachment projection")
-            attachment, caption = parse_manifest(row.get("content"))
+        content_type = row.get("content_type")
+        if content_type == MANIFEST_CONTENT_TYPE:
+            attachment, caption = parse_manifest(row.get("content", row.get("payload")))
             output.append(
                 ChatMessage(
-                    _required_str(row, "id"),
+                    _message_id(row),
                     _response_did(row, "sender_did"),
-                    _response_did(row, "receiver_did"),
+                    _message_target(row, fallback_target),
                     "",
                     _optional_timestamp(row),
                     _required_bool(row, "is_read", default=False),
@@ -360,14 +459,14 @@ def _parse_page(page: dict[str, Any]) -> list[ChatMessage]:
                 )
             )
             continue
-        if row.get("content_type") != "text/plain" or row.get("type") != "text":
+        if content_type != "text/plain":
             continue
         output.append(
             ChatMessage(
-                _required_str(row, "id"),
+                _message_id(row),
                 _response_did(row, "sender_did"),
-                _response_did(row, "receiver_did"),
-                _required_str(row, "content", allow_empty=True),
+                _message_target(row, fallback_target),
+                _message_text(row),
                 _optional_timestamp(row),
                 _required_bool(row, "is_read", default=False),
             )
@@ -405,5 +504,39 @@ def _optional_timestamp(value: dict[str, Any]) -> str:
 def _response_did(value: dict[str, Any], field: str) -> str:
     try:
         return validate_did(_required_str(value, field))
+    except ValueError as exc:
+        raise ProtocolResponseError(f"service returned an invalid {field}") from exc
+
+
+def _message_id(value: dict[str, Any]) -> str:
+    for field in ("id", "message_id"):
+        result = value.get(field)
+        if isinstance(result, str) and result:
+            return result
+    raise ProtocolResponseError("service returned an invalid message id")
+
+
+def _message_target(value: dict[str, Any], fallback: str | None) -> str:
+    for field in ("receiver_did", "target_did"):
+        if field in value:
+            return _response_did(value, field)
+    if fallback is None:
+        raise ProtocolResponseError("service returned an invalid receiver_did")
+    try:
+        return validate_did(fallback)
+    except ValueError as exc:  # pragma: no cover - local identity is validated on registration
+        raise ProtocolResponseError("service returned an invalid receiver_did") from exc
+
+
+def _message_text(value: dict[str, Any]) -> str:
+    for field in ("content", "text"):
+        if field in value:
+            return _required_str(value, field, allow_empty=True)
+    raise ProtocolResponseError("service returned invalid message content")
+
+
+def _validate_remote_cursor(value: str, field: str) -> None:
+    try:
+        _validate_decimal_cursor(value, field)
     except ValueError as exc:
         raise ProtocolResponseError(f"service returned an invalid {field}") from exc

@@ -76,7 +76,11 @@ def parse_sync_changed(raw: str | bytes) -> SyncChanged:
         raise ListenerError("websocket notification is not valid JSON") from exc
     if not isinstance(value, dict) or value.get("method") != "sync.changed":
         raise ListenerError("websocket sent an unsupported notification")
-    payload = value.get("payload")
+    has_payload = "payload" in value
+    has_params = "params" in value
+    if has_payload == has_params:
+        raise ListenerError("sync.changed notification has an invalid shape")
+    payload = value.get("payload") if has_payload else value.get("params")
     sync = value.get("sync")
     if not isinstance(payload, dict) or not isinstance(sync, dict):
         raise ListenerError("sync.changed notification has an invalid shape")

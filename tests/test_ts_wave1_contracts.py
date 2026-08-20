@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.repo_contract
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -27,7 +31,8 @@ def test_cli_ux_contract_freezes_required_rules() -> None:
 def test_local_state_contract_freezes_required_rules() -> None:
     text = (ROOT / "docs/contracts/local-state-v1.md").read_text(encoding="utf-8")
     assert "awiki-lite-cli-ts" in text
-    assert 'fs-ext.flock(fd, "ex")' in text
+    assert "each implementation owns its state directory" in text
+    assert "cross-runtime state sharing is unsupported" in text
     assert "proper-lockfile" in text
     assert "BEGIN ENCRYPTED PRIVATE KEY" in text
     assert "key-name only" in text
@@ -36,25 +41,31 @@ def test_local_state_contract_freezes_required_rules() -> None:
     assert "Python `cryptography` is the source" in text
 
 
-def test_ci_has_exactly_two_independent_jobs() -> None:
+def test_ci_has_independent_language_jobs() -> None:
     raw = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "  python:" in raw
     assert "  typescript:" in raw
-    assert "  interop-lock:" in raw
     assert "needs:" not in raw
-    assert raw.index("Build sibling ANP TypeScript SDK") < raw.index(
-        "Install, typecheck, test, and build Lite TypeScript"
-    )
-    assert "npm run build" in raw
+    assert "Checkout sibling ANP SDK" not in raw
+    assert "Build sibling ANP TypeScript SDK" not in raw
+    assert "uv run pytest -m repo_contract tests/test_ts_wave1_contracts.py" in raw
     assert "pnpm install --frozen-lockfile" in raw
+    assert "interop-lock" not in raw
 
 
-def test_typescript_package_pins_and_file_sdk() -> None:
+def test_typescript_package_pins_published_sdk() -> None:
     package = (ROOT / "typescript/package.json").read_text(encoding="utf-8")
+    lock = (ROOT / "typescript/pnpm-lock.yaml").read_text(encoding="utf-8")
     assert '"name": "@awiki/lite-cli"' in package
     assert '"awiki-lite-ts"' in package
     assert '"packageManager": "pnpm@9.15.0"' in package
-    assert "file:../../anp/anp/typescript/ts_sdk" in package
+    assert '"@awiki/anp-typescript-sdk": "0.9.3"' in package
+    assert "file:../../anp/anp/typescript/ts_sdk" not in package
+    assert "'@awiki/anp-typescript-sdk@0.9.3':" in lock
+    assert "specifier: 0.9.3" in lock
+    assert "sha512-yFvcVndo9341Va91" in lock
+    assert "@anp/typescript-sdk" not in lock
+    assert "file:../../anp/anp/typescript/ts_sdk" not in lock
     assert (ROOT / "typescript/src/cli.ts").is_file()
     assert not (ROOT / "package.json").exists()
     assert not (ROOT / "pnpm-workspace.yaml").exists()
@@ -65,3 +76,12 @@ def test_python_packaging_is_unchanged() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'packages = ["src/awiki_lite_cli"]' in pyproject
     assert (ROOT / "src/awiki_lite_cli/cli.py").is_file()
+
+
+def test_combined_runner_only_orchestrates_independent_suites() -> None:
+    runner = (ROOT / "scripts/test_all.py").read_text(encoding="utf-8")
+    assert '[sys.executable, "-m", "pytest"]' in runner
+    assert '[pnpm, "test"]' in runner
+    assert "live" not in runner.lower()
+    assert not (ROOT / "tests/test_cross_runtime_cli.py").exists()
+    assert not (ROOT / "typescript/tests/interop").exists()

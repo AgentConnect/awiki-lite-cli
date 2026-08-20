@@ -22,6 +22,7 @@ from awiki_lite_cli.infrastructure.attachment_service import (
 )
 from awiki_lite_cli.infrastructure.group_service import GroupService
 from awiki_lite_cli.infrastructure.message_service import MessageService
+from awiki_lite_cli.infrastructure.peer_resolver import resolve_peer_did
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
 
@@ -32,7 +33,7 @@ T = TypeVar("T")
 @app.command("send")
 def send(
     file: Path,
-    recipient_did: str | None = typer.Option(None, "--to"),
+    recipient_did: str | None = typer.Option(None, "--to", help="Direct peer DID or handle."),
     group_did: str | None = typer.Option(None, "--group"),
     caption: str | None = typer.Option(None, "--caption"),
     caption_stdin: bool = typer.Option(
@@ -77,6 +78,12 @@ def _run_send(
         async with httpx.AsyncClient(
             timeout=20.0, trust_env=False, follow_redirects=False
         ) as client:
+            identity = store.unlock(passphrase)
+            resolved_recipient = (
+                await resolve_peer_did(client, recipient_did, identity.identity.handle)
+                if recipient_did is not None
+                else None
+            )
             workflow = AttachmentWorkflow(
                 AttachmentService(client, settings.message_service_url),
                 MessageService(client, settings.message_service_url),
@@ -87,9 +94,9 @@ def _run_send(
                 prepare_download_destination,
             )
             return await workflow.send(
-                store.unlock(passphrase),
+                identity,
                 file,
-                recipient_did=recipient_did,
+                recipient_did=resolved_recipient,
                 group_did=group_did,
                 caption=caption,
             )

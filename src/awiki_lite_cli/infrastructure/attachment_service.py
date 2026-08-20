@@ -167,7 +167,12 @@ def prepare_file(path: Path, max_bytes: int) -> PreparedFile:
         raise ValueError("attachment file is unavailable") from exc
     if not stat.S_ISREG(before_open.st_mode):
         raise ValueError("attachment path must be a regular file, not a symlink or special file")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     flags |= getattr(os, "O_NONBLOCK", 0)
     try:
         fd = os.open(path, flags)

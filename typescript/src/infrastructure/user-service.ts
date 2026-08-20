@@ -52,14 +52,23 @@ export class UserService {
     phone: string,
     otpCode: string,
   ): Promise<Record<string, unknown>> {
-    return asObject(
-      await callJsonRpc(this.client, `${this.baseUrl}/user-service/v1/did-auth/rpc`, 'register', {
+    const endpoint = `${this.baseUrl}/user-service/v1/did-auth/rpc`;
+    const requestId = randomUUID();
+    const response = await this.client.post(endpoint, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-AWiki-Client-Version': CLIENT_IDENTIFIER,
+      },
+      body: encodeJsonRpcRequest(requestId, 'register', {
         did_document: didDocument,
         handle,
         phone,
         otp_code: otpCode,
-      }),
-    );
+      }).toString('utf8'),
+    });
+    const result = asObject(await decodeJsonRpcResponse(response, requestId));
+    const token = bearerToken(response.headers.authorization);
+    return token && !result.access_token ? { ...result, access_token: token } : result;
   }
 
   async refreshSession(identity: IdentityState, signingKeyPem: string): Promise<string> {
@@ -74,10 +83,9 @@ export class UserService {
       headers,
       signHttpRequest(identity.didDocument, endpoint, 'POST', signingKeyPem, headers, body, identity.verificationMethod),
     );
-    const result = asObject(
-      await decodeJsonRpcResponse(await this.client.post(endpoint, { headers, body }), requestId),
-    );
-    const token = result.access_token;
+    const response = await this.client.post(endpoint, { headers, body });
+    const result = asObject(await decodeJsonRpcResponse(response, requestId));
+    const token = result.access_token ?? bearerToken(response.headers.authorization);
     if (typeof token !== 'string' || !token.trim()) {
       throw new Error('DID authentication returned no access token');
     }
@@ -93,4 +101,11 @@ function asObject(value: unknown): Record<string, unknown> {
     throw new Error('service returned an invalid result');
   }
   return value as Record<string, unknown>;
+}
+
+function bearerToken(value: string | undefined): string | undefined {
+  if (!value?.toLowerCase().startsWith('bearer ')) {
+    return undefined;
+  }
+  return value.slice(7).trim() || undefined;
 }

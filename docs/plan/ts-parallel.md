@@ -1,5 +1,21 @@
 # AWiki Lite CLI 双语言并行方案（Python + TypeScript）
 
+> 2026-08-19 交互方案取消：Python 和 TypeScript 是两个独立实现，各自使用
+> 独立状态目录。跨运行时文件锁、共享状态、双进程交互、PKCS#8 跨语言向量及
+> 对应 PR 阶段均已取消。本文后续相关内容只保留为历史记录，不得据此恢复代码、
+> 测试或 CI；现行规则以 `AGENTS.md`、`README.md` 和
+> `docs/contracts/local-state-v1.md` 为准。
+
+> 2026-08-18 实施更新：本文中早期的 `register` / `dm` / `attachment` /
+> `session` / `listener` 命令示例保留为历史设计记录。当前 Python 和
+> TypeScript 的权威公开语法以 `docs/contracts/cli-ux-v0.2.md` 为准，
+> 顶层分组统一为 `id` / `msg` / `group` / `runtime`。
+>
+> 2026-08-18 依赖更新：ANP TypeScript SDK 已发布为 npm
+> `@awiki/anp-typescript-sdk@0.9.3`。本文后面出现的 sibling checkout、
+> `file:../../anp/anp/typescript/ts_sdk`、手动构建 SDK 和 ANP SHA 固定方式仅是
+> 发布前的历史计划，已经被正式 npm 依赖取代。当前安装与 CI 不需要相邻 ANP 仓库。
+
 | 字段 | 值 |
 |---|---|
 | 文档标题 | AWiki Lite CLI TypeScript 并行实现设计 |
@@ -9,7 +25,7 @@
 | 状态 | Ready for implementation |
 | 适用范围 | 现有 Python CLI 继续作为一等实现；新增独立 TypeScript CLI，两者并行支持 |
 | 目标仓库 | `/home/ecs-user/awiki-space/awiki-lite-cli` |
-| 权威 ANP TS SDK | `/home/ecs-user/awiki-space/anp/anp/typescript/ts_sdk`（`@anp/typescript-sdk@0.2.0`） |
+| 权威 ANP TS SDK | npm `@awiki/anp-typescript-sdk@0.9.3`（精确版本，由 `pnpm-lock.yaml` 校验完整性） |
 | 本文性质 | 只设计，不实现 |
 
 ---
@@ -51,7 +67,7 @@ awiki-lite session refresh
 awiki-lite listener run|install|start|stop|restart|status|uninstall
 ```
 
-Python 依赖：`anp==0.9.2`（`[tool.uv.sources] anp = { path = "../anp/anp", editable = true }`）、`typer`、`httpx`、`platformdirs`、`cryptography`、`websockets`。身份生成走 `anp.authentication.create_did_wba_document` + `build_vnext_did_document` + `DeviceManifestEntry` + `generate_w3c_proof`；消息签名走 `anp.proof.generate_rfc9421_origin_proof`；会话刷新走 `anp.authentication.generate_http_signature_headers`。`AGENTS.md` 明确禁止在本仓库重写 ANP 已提供的身份 / proof / 密码学。
+Python 依赖：PyPI `anp==0.9.2`、`typer`、`httpx`、`platformdirs`、`cryptography`、`websockets`。身份生成走 `anp.authentication.create_did_wba_document` + `build_vnext_did_document` + `DeviceManifestEntry` + `generate_w3c_proof`；消息签名走 `anp.proof.generate_rfc9421_origin_proof`；会话刷新走 `anp.authentication.generate_http_signature_headers`。`AGENTS.md` 明确禁止在本仓库重写 ANP 已提供的身份 / proof / 密码学。
 
 仓库**今天没有** `.github/` CI。`docs/plan/v1-architecture.md` 只规划了“同时 checkout ANP 匹配 revision”，该 workflow 从未落地。双语言 CI 必须从零编写，不能“挂在现有 Python job 上”。
 
@@ -81,7 +97,7 @@ Python v0.1 注册/私聊与 v0.2 群/附件已经有冻结契约和脱敏 fixtu
 ### Non-Goals
 
 - 不把 Python 改写成 TS，不做共享 FFI/WASM 运行时。允许一个**很小**的可选 native addon（`fs-ext` 或自研 N-API）**只**用于 flock，不把协议/身份放进 native。
-- 不在 Lite CLI 内重实现 Device Manifest、JCS、RFC 9421 origin proof 签名基、HTTP Message Signature、W3C Data Integrity。缺的能力回推 sibling ANP TS SDK。
+- 不在 Lite CLI 内重实现 Device Manifest、JCS、RFC 9421 origin proof 签名基、HTTP Message Signature、W3C Data Integrity。缺的能力回推官方 ANP TS SDK。
 - 不把 `createAwikiImClient()` / `AwikiImStateStore` / 任何 `im/*` 模块当作 Lite 架构或生产依赖。
 - 不把 CLI 里对 `proof.im.generateImProof` 的薄封装当作 origin proof 生产路径。
 - 不做 E2EE、MLS、多设备、身份恢复、Keychain、可靠同步投影、TUI、邮件、插件、Handle lookup。
@@ -98,10 +114,10 @@ Python v0.1 注册/私聊与 v0.2 群/附件已经有冻结契约和脱敏 fixtu
 | 仓库布局 | **单仓，Python 留在仓库根；新增 `typescript/`** | 最小扰动。`uv build` 继续只打 Python wheel。不引入根级 npm workspace。 |
 | 包与二进制 | Python `awiki-lite`；TS `@awiki/lite-cli`，bin **`awiki-lite-ts`** | 同名会互相覆盖 PATH。 |
 | 契约所有权 | **`docs/contracts/` + `tests/fixtures/contracts/`**；新增 `cli-ux-v0.2.md` 与 `local-state-v1.md`，**作为独立必合 PR，不可并入脚手架** | UX/状态今天只在 Python 代码里；没有书面契约，PR 3 会发明另一套 schema。 |
-| TS 运行时 | **Node `20.11`，pnpm 9（`packageManager` 钉死），ESM，strict + `noUncheckedIndexedAccess`，Commander 12，Vitest，ESLint 9 + `@typescript-eslint` + Prettier** | 与 SDK `engines.node >= 20` 对齐。SDK 本身用 npm；贡献者需要 **npm 构建 sibling SDK + pnpm 构建 Lite TS**。 |
+| TS 运行时 | **Node `20.11`，pnpm 9（`packageManager` 钉死），ESM，strict + `noUncheckedIndexedAccess`，Commander 12，Vitest，ESLint 9 + `@typescript-eslint` + Prettier** | 与 SDK `engines.node >= 20` 对齐；pnpm 从 npm 自动安装 SDK。 |
 | 口令输入 | **`@inquirer/password`，必须 TTY** | 不用 `\x1B[8m` + readline（仍可能回显/被记入终端）。禁止 `--passphrase` 与环境变量。 |
 | HTTP | 原生 `fetch` + **显式依赖 `undici`**（自定义 CA Dispatcher） | Node 内置 undici 版本漂移；`AWIKI_LITE_CA_BUNDLE` 要有冒烟测试。 |
-| ANP TS SDK | **`file:../../anp/anp/typescript/ts_sdk`**，安装前必须 `npm ci && npm run build` 该包 | `dist/` 被 SDK 与 ANP 根 `.gitignore` 忽略；裸 `file:` 在新 checkout 无法 import。 |
+| ANP TS SDK | **精确依赖 `@awiki/anp-typescript-sdk@0.9.3`** | npm 包已包含编译后的 ESM、CommonJS 和类型声明；锁文件固定完整性校验值。 |
 | 高层 IM client | **不用；禁止 import `im/*`** | Legacy 身份/OTP/明文状态/无 Manifest。 |
 | Origin proof 生产路径 | **只调用 SDK 公开的 `generateRfc9421OriginProof`（PR 0a）** | 禁止 CLI 组装 signature base 或封装 `generateImProof`。 |
 | 分层 | **镜像依赖方向，不假装 Python `dm` 已有 application 层** | TS **可以**新增 `application/direct.ts`。commands 可以像 Python 一样直接构造 infrastructure。 |
@@ -155,32 +171,28 @@ awiki-lite-cli/                          # 仓库根，Python 一等实现保持
 
 不引入根级 npm/pnpm workspace。`ruff check .` 会忽略 TS，这是预期；不要为此移动 Python 树。
 
-开发机与 CI 的 checkout 几何：
+当前开发机与 CI 的目录结构：
 
 ```text
 $WORK/
-├── anp/anp/                  # Python editable: ../anp/anp
-│   └── typescript/ts_sdk/    # Lite TS file: ../../anp/anp/typescript/ts_sdk
 └── awiki-lite-cli/
-    ├── pyproject.toml
-    └── typescript/package.json
+    ├── pyproject.toml          # Python ANP 从 PyPI 安装
+    └── typescript/package.json # TypeScript ANP 从 npm 安装
 ```
 
-**ANP revision 钉死。** 两个 job checkout 同一 `agent-network-protocol/anp` SHA。该 SHA 必须同时满足：Python 包宣称 `anp==0.9.2` 的可编辑源（或明确记录的兼容 revision），以及 `typescript/ts_sdk/package.json` version `>=0.2.0` 且含 PR 0a/0b 导出。GitHub 远端布局是否与本机 `/home/ecs-user/awiki-space/anp/anp` 一致，是 CI 的第一道断言（见 §11、Issue 17 清单），不能拖到 PR 5 才发现。
+**依赖版本钉死。** Python 由 `uv.lock` 固定 PyPI `anp==0.9.2`；TypeScript 由 `package.json` 精确固定 npm `@awiki/anp-typescript-sdk@0.9.3`，并由 `pnpm-lock.yaml` 固定安装包完整性。CI 不再 checkout ANP 源码。
 
-#### 1.1 `file:` 依赖与被 gitignore 的 `dist/`
+#### 1.1 已发布的 npm 依赖
 
-`@anp/typescript-sdk` 的 `exports` 指向 `./dist/index.js`，`files` 只含 `dist/`。`typescript/ts_sdk/.gitignore` 与 ANP 根 `.gitignore` 都忽略 `dist/`。新鲜 clone **没有可 import 的包**。
+`@awiki/anp-typescript-sdk@0.9.3` 的 npm 包已经包含 `dist/index.js`、CommonJS 输出和类型声明。新 checkout 不需要本地构建 SDK。
 
 本地一句话：
 
 ```bash
-# from $WORK/awiki-lite-cli
-(cd ../anp/anp/typescript/ts_sdk && npm ci && npm run build)
 (cd typescript && pnpm install && pnpm exec awiki-lite-ts --help)
 ```
 
-CI TS job 必须按同一顺序；`pnpm install` 不得发生在 SDK `dist/` 构建之前。
+CI TS job 使用 `pnpm install --frozen-lockfile`，直接下载并校验同一份 `0.9.3` 包。
 
 ### 2. 运行时关系
 
@@ -202,9 +214,9 @@ flowchart TB
     TSDIR["~/.local/state/awiki-lite-cli-ts"]
   end
 
-  subgraph anp [Sibling ../anp/anp]
-    PYSDK["Python SDK anp==0.9.2"]
-    TSSDK["@anp/typescript-sdk 0.2.0+ built dist/"]
+  subgraph anp [Published ANP packages]
+    PYSDK["PyPI anp==0.9.2"]
+    TSSDK["npm @awiki/anp-typescript-sdk@0.9.3"]
   end
 
   SVC["awiki.info"]
@@ -231,9 +243,9 @@ flowchart TB
 |---|---|---|
 | `cli.py` Typer | `src/cli.ts` Commander | 装配 + **统一错误映射**（§7.2） |
 | `commands/direct.py` **就是** send 工作流：`prepare_send` / `service.send` / `complete_send`，无 application 层 | 允许同样直连；**更推荐**抽出 `application/direct.ts`（改进，不是镜像义务） | commands 可以构造 `fetch` 客户端、`SecureStateStore`、infrastructure services，与 Python 一致 |
-| `application/registration.py` 等 | `application/{registration,groups,attachments,direct?}.ts` | application **不** import `@anp/typescript-sdk` / `node:fs` |
+| `application/registration.py` 等 | `application/{registration,groups,attachments,direct?}.ts` | application **不** import `@awiki/anp-typescript-sdk` / `node:fs` |
 | `domain/validation.py` | `domain/validation.ts` | 移植 domain 模块；`infrastructure/validation.py` 只是 re-export |
-| `infrastructure/anp_sdk.py` | `infrastructure/anp-sdk.ts` | **唯一**允许 import `@anp/typescript-sdk` 的文件 |
+| `infrastructure/anp_sdk.py` | `infrastructure/anp-sdk.ts` | **唯一**允许 import `@awiki/anp-typescript-sdk` 的文件 |
 | `infrastructure/state.py` | `infrastructure/state.ts` | 兼容 schema；锁见 §8.4 |
 
 `commands/_status.py` 的 `not_implemented` 是脚手架残留，不要移植。
@@ -264,7 +276,7 @@ flowchart TB
   "engines": { "node": ">=20.11" },
   "bin": { "awiki-lite-ts": "./dist/cli.js" },
   "dependencies": {
-    "@anp/typescript-sdk": "file:../../anp/anp/typescript/ts_sdk",
+    "@awiki/anp-typescript-sdk": "0.9.3",
     "@inquirer/password": "^4.0.0",
     "commander": "^12.1.0",
     "fs-ext": "^2.1.1",
@@ -301,7 +313,7 @@ flowchart TB
 
 | 副本 | 路径 | 结论 |
 |---|---|---|
-| **权威源** | `/home/ecs-user/awiki-space/anp/anp/typescript/ts_sdk` | **只依赖这一份**（先 build `dist/`） |
+| **权威发布包** | npm `@awiki/anp-typescript-sdk@0.9.3` | **精确依赖该版本**，由 pnpm 锁文件校验 |
 | vendor | `/home/ecs-user/awiki-space/dsh-awiki/vendor/anp-typescript-sdk` | **不用**（IM 分叉：`display-name.ts`、`updateDisplayName`、`resolvePeer`、`markConversationRead`；缺 authentication/proof/wns 单测与 `tests/fixtures/rust/`） |
 
 #### 5.2 高层 IM client 不可接受的语义差（核实过）
@@ -575,33 +587,27 @@ Python `UserService.refresh_session`：**一次** `generate_http_signature_heade
 
 ### 11. 测试与 CI
 
-仓库今天无 `.github/`。PR 1 **从零**写：
+仓库现在已有三个独立 CI job：
 
 ```yaml
-# 概念结构，不是最终 YAML
 jobs:
   python:
-    # uv sync --group dev; ruff; mypy; pytest; uv build
-    # checkout anp @ PINNED_SHA as sibling
+    # checkout Lite；uv sync --group dev；ruff；mypy；pytest；uv build
   typescript:
-    # checkout Lite + anp @ 同一 PINNED_SHA
-    # assert anp/typescript/ts_sdk/package.json exists
-    # (cd anp/anp/typescript/ts_sdk && npm ci && npm run build)
-    # (cd awiki-lite-cli/typescript && pnpm install --frozen-lockfile)
-    # pnpm typecheck && pnpm test && pnpm build
-  interop-lock:   # PR 3 加入；PR 1 不要假装 python/typescript 能跑这场测试
+    # checkout Lite；Node 20.11；pnpm 9.15
+    # pnpm install --frozen-lockfile；pnpm typecheck；pnpm test；pnpm build
+  interop-lock:
+    # Ubuntu + Windows matrix
     # Python 3.10 + uv sync --group dev
-    # Node 20.11 + sibling SDK npm ci && npm run build + pnpm install（含 native fs-ext）
-    # export AWIKI_LITE_STATE_DIR=$RUNNER_TEMP/awiki-lock
-    # python tests/lock_holder.py 与 pnpm exec vitest typescript/tests/interop/lock.test.ts
-    # 无 needs；失败只表示跨运行时锁，不挡另一语言的单元门禁语义，但 PR 3+ 必须绿
+    # Node 20.11 + pnpm install --frozen-lockfile（含 native fs-ext）+ pnpm build
+    # 根 Python/TypeScript CLI 契约测试 + typescript/tests/interop/lock.test.ts
 ```
 
 - `python` 与 `typescript` 两 job 无 `needs`。Python 失败不得被描述成 TS 问题。
-- 触碰 `typescript/` 的 PR：`typescript` job **必过**（不是 warn-only）。M0–M4 的该 job 不含远程网络。
-- **`interop-lock` 是第三 job**，由 PR 3 写入 workflow。它同时装 Python 与 Node，是 flock 互操作的唯一 CI 家。在该 job 存在之前，不要把 flock 门禁说成“Linux CI 必跑”。
+- 触碰 `typescript/` 的 PR：`typescript` job **必过**（不是 warn-only），且不访问业务服务网络。
+- **`interop-lock` 是第三 job**。它同时安装 Python 与 Node，并在 Ubuntu 和 Windows 上验证两套 CLI 及锁行为。
 - 根 `.gitignore` 增加 `typescript/node_modules/`、`typescript/dist/`、`*.tsbuildinfo`。
-- 钉 Node 20.11、pnpm 9.15.x、ANP SHA。
+- 钉 Node 20.11、pnpm 9.15.x 和 npm ANP `0.9.3`；不再钉 ANP Git SHA。
 - TS 只读 `../../tests/fixtures/contracts/*.json`。
 
 | 层 | 归属 PR |
@@ -787,7 +793,7 @@ export function validateDeviceManifest(document: DidDocument): DeviceManifest;
 | 1 | `awiki.info` 是否接受 `awiki-cli/0714/0.2.0` | `cli-ux-v0.2.md` | 发送该串；失败再申请 allow-list，**不要**改成 `0714/0.1.0` |
 | 2 | `get_me` 要不要 401 nonce | 同上 | 单次签名；必要时一次重试 |
 | 3 | GitHub `anp` 是否含 `typescript/ts_sdk` | CI 断言 + pin SHA | 布局不匹配则 TS job 失败 |
-| 4 | npm 上有没有 `@anp/typescript-sdk` | 无 | 直到公开发布都用 path + 本地 build |
+| 4 | npm 上有没有可用的 ANP TypeScript SDK | 已确认 `@awiki/anp-typescript-sdk@0.9.3` | 精确固定 `0.9.3` 并提交 pnpm 锁文件 |
 
 ---
 
@@ -810,7 +816,7 @@ export function validateDeviceManifest(document: DidDocument): DeviceManifest;
 |---|---|---|
 | High | Manifest / origin 与 Python 不一致 | 0a/0b + 交叉 verify |
 | High | 无 flock 双写 | 隔离默认 + native lock + 测试 |
-| High | 未 build 的 `file:` 依赖 | CI/文档强制 `npm run build` |
+| High | npm 包与 Lite 所需公开 API 漂移 | 精确固定 `0.9.3`、锁定 integrity，并运行类型、构建和运行时测试 |
 | Medium | allow-list 拒 `0714/0.2.0` 以外的 token | 不从 0.1.0-dev 推导 header |
 | Medium | macOS 路径与手写算法不一致 | 冻结字符串 + Python 黄金测试 |
 | Medium | `fs-ext` 编不过 | 该平台不共享目录；考虑 H.2 |
@@ -854,7 +860,7 @@ SDK 在 sibling 仓库；其余在 Lite。PR 1–3 **不**依赖 0a/0b 合并（
 
 - **影响：** `typescript/**` 最小 CLI、`.github/workflows/ci.yml`（**仅 `python` + `typescript` 两 job**）、根 `.gitignore`（`typescript/node_modules/`、`typescript/dist/`）、`AGENTS.md`（`pnpm test`、`pnpm exec awiki-lite-ts`、sibling `npm ci && npm run build`）、README 一句“TS 脚手架即将提供”
 - **依赖：** 无（与 0a/0b 并行）
-- **说明：** `typescript` job：pin Node 20.11、pnpm 9、ANP SHA；先 build SDK `dist/` 再 `pnpm install`。`python` job：`uv` 门禁。无 `needs`。不移动 Python。`uv build` 仍是 Python-only wheel。**不要**在本 PR 宣称 flock 已在 Linux CI 必跑——第三 job `interop-lock` 属于 PR 3。
+- **说明：** 这是发布前的历史步骤。当前 `typescript` job 固定 Node 20.11、pnpm 9 和 npm ANP `0.9.3`，直接执行 frozen-lockfile 安装；`python` job 仍为 `uv` 门禁。无 `needs`，不移动 Python，`uv build` 仍是 Python-only wheel。
 
 ### PR 2 — `docs: freeze cli-ux-v0.2 and local-state-v1`（必合，不可并入 PR 1）
 
@@ -914,7 +920,7 @@ SDK 在 sibling 仓库；其余在 Lite。PR 1–3 **不**依赖 0a/0b 合并（
 
 - **影响：** `README.md`、`AGENTS.md`
 - **依赖：** 里程碑落地后更新；**“与 Python 0.2 对等”句依赖 PR 8**
-- **说明：** **保留现有英文 README 正文**，增加一节 TypeScript 安装与命令示例（短双语可）。不改写成全文中英对照，不新增 `README.zh.md`。说明 M1 默认目录仍隔离、`AWIKI_LITE_STATE_DIR` 可显式共享、切换 listener 须重装、构建 sibling SDK 需要 `npm ci && npm run build`。
+- **说明：** **保留现有英文 README 正文**，增加一节 TypeScript 安装与命令示例（短双语可）。不改写成全文中英对照，不新增 `README.zh.md`。说明 M1 默认目录仍隔离、`AWIKI_LITE_STATE_DIR` 可显式共享、切换 listener 须重装；ANP SDK 由 `pnpm install` 从 npm 自动安装。
 
 ### PR 12 — `feat(ts): share default state dir after flock interop`
 

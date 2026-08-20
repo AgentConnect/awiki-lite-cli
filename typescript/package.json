@@ -23,7 +23,7 @@
     "postinstall": "node ./scripts/link-bin.mjs"
   },
   "dependencies": {
-    "@anp/typescript-sdk": "file:../../anp/anp/typescript/ts_sdk",
+    "@awiki/anp-typescript-sdk": "0.9.3",
     "@inquirer/password": "^4.0.0",
     "commander": "^12.1.0",
     "fs-ext": "^2.1.1",
@@ -37,6 +37,7 @@
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
     "eslint-config-prettier": "^9.1.0",
+    "globals": "^16.0.0",
     "prettier": "^3.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",

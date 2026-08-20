@@ -37,9 +37,13 @@ async def test_registration_flow_sends_scoped_otp_and_persists(tmp_path: Path) -
                 "did": body["params"]["did_document"]["id"],
                 "user_id": "fixture-user",
                 "full_handle": "alice.example.test",
-                "access_token": "fixture-token",
             }
-        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+        headers = {"Authorization": "Bearer fixture-token"} if body["method"] == "register" else {}
+        return httpx.Response(
+            200,
+            headers=headers,
+            json={"jsonrpc": "2.0", "id": body["id"], "result": result, "error": None},
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         store = SecureStateStore(tmp_path / "state")

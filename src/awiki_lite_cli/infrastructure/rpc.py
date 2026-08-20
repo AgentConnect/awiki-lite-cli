@@ -61,12 +61,15 @@ def decode_json_rpc_response(response: httpx.Response, request_id: str) -> Any:
         raise ProtocolResponseError("service returned an invalid JSON-RPC response")
     if payload.get("jsonrpc") != "2.0" or payload.get("id") != request_id:
         raise ProtocolResponseError("service returned an invalid JSON-RPC envelope")
-    has_error = "error" in payload
+    error_value = payload.get("error")
+    has_error = error_value is not None
     has_result = "result" in payload
-    if has_error == has_result:
+    if has_error and has_result and payload["result"] is not None:
+        raise ProtocolResponseError("service returned an ambiguous JSON-RPC response")
+    if not has_error and not has_result:
         raise ProtocolResponseError("service returned an ambiguous JSON-RPC response")
     if has_error:
-        error = payload["error"]
+        error = error_value
         if not isinstance(error, dict):
             raise ProtocolResponseError("service returned an invalid JSON-RPC error")
         code = error.get("code")

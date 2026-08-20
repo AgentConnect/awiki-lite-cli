@@ -12,7 +12,8 @@ import typer
 
 from awiki_lite_cli.config import Settings
 from awiki_lite_cli.domain.models import AttachmentContext, AuthenticatedIdentity, ChatMessage
-from awiki_lite_cli.infrastructure.message_service import MessageService, validate_did
+from awiki_lite_cli.infrastructure.message_service import MessageService
+from awiki_lite_cli.infrastructure.peer_resolver import resolve_peer_did
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
 from awiki_lite_cli.presentation import terminal_text
@@ -27,7 +28,7 @@ def send(
     text: str | None = typer.Argument(None),
     stdin: bool = typer.Option(False, "--stdin", help="Read message text from standard input."),
 ) -> None:
-    """Send a plain text message to one exact DID."""
+    """Send a plain text message to one DID or handle."""
     if stdin and text is not None:
         typer.echo("Invalid input: TEXT and --stdin are mutually exclusive", err=True)
         raise typer.Exit(2)
@@ -36,7 +37,9 @@ def send(
         text_value = typer.prompt("Message")
 
     async def action(service: MessageService, store: SecureStateStore) -> ChatMessage:
-        recipient = validate_did(recipient_did)
+        recipient = await resolve_peer_did(
+            service.client, recipient_did, store.load_public().handle
+        )
         if not text_value or not text_value.strip():
             raise ValueError("message text must not be empty")
         if len(text_value.encode()) > 64 * 1024:
@@ -78,7 +81,7 @@ def inbox(
     ),
     mark_read: bool = typer.Option(False, "--mark-read", help="Mark displayed messages read."),
 ) -> None:
-    """Read the local plain-message inbox."""
+    """Read the plain-message inbox."""
 
     async def action(
         service: MessageService, store: SecureStateStore
@@ -103,7 +106,7 @@ def inbox(
 
 @app.command("history")
 def history(
-    peer_did: Annotated[str, typer.Option("--with", help="Direct peer DID.")],
+    peer_did: Annotated[str, typer.Option("--with", help="Direct peer DID or handle.")],
     limit: int = typer.Option(50, min=1, max=100),
     skip: int = typer.Option(
         0,
@@ -112,13 +115,14 @@ def history(
         hidden=True,
     ),
 ) -> None:
-    """Read plain-message history with one exact DID."""
+    """Read plain-message history with one DID or handle."""
 
     async def action(
         service: MessageService, store: SecureStateStore
     ) -> tuple[list[ChatMessage], bool]:
         identity = AuthenticatedIdentity(store.load_public(), store.load_session())
-        messages, has_more = await service.history(identity, peer_did, limit, skip)
+        peer = await resolve_peer_did(service.client, peer_did, identity.identity.handle)
+        messages, has_more = await service.history(identity, peer, limit, skip)
         _save_attachment_contexts(store, messages)
         return messages, has_more
 

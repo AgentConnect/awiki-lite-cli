@@ -1,25 +1,23 @@
 # Local state contract v1
 
-Python `awiki-lite` and TypeScript `awiki-lite-ts` share this on-disk schema.
-They do **not** share a default directory until the `interop-lock` job is green
-and the dedicated follow-up that switches the TypeScript appname back to
-`awiki-lite-cli` has landed.
+Python `awiki-lite` and TypeScript `awiki-lite-ts` use equivalent field names
+where practical, but each implementation owns its state directory. Pointing
+both implementations at the same directory is unsupported.
 
 ## Default directories
 
 Resolved with `platformdirs` 4.x `user_state_path(appname, "AgentConnect")`.
 
-| OS | Python `appname=awiki-lite-cli` | TypeScript M1 `appname=awiki-lite-cli-ts` |
+| OS | Python `appname=awiki-lite-cli` | TypeScript `appname=awiki-lite-cli-ts` |
 |---|---|---|
 | Linux | `${XDG_STATE_HOME:-$HOME/.local/state}/awiki-lite-cli` | same algorithm, directory name `awiki-lite-cli-ts` |
 | macOS | `~/Library/Application Support/awiki-lite-cli` (appauthor ignored) | `~/Library/Application Support/awiki-lite-cli-ts` |
 | Windows | `%LOCALAPPDATA%\AgentConnect\awiki-lite-cli` | `%LOCALAPPDATA%\AgentConnect\awiki-lite-cli-ts` |
 
-M1 must use the isolated TypeScript appname. Sharing the Python default
-directory is opt-in via `AWIKI_LITE_STATE_DIR` until flock interop is proven
-in **both** directions. This environment's `fs-ext.flock` excludes a later
-Python `fcntl.flock`, but does not observe an already-held Python lock, so
-the default appname stays `awiki-lite-cli-ts`.
+The TypeScript appname is permanently `awiki-lite-cli-ts` so its files remain
+separate from Python state. `AWIKI_LITE_STATE_DIR` may relocate either
+implementation, but it must not point both implementations at the same
+directory.
 
 ## Layout
 
@@ -53,9 +51,8 @@ Do not create the TypeScript IM client's plaintext `awiki-im.json`.
   The cipher name is **not** frozen; Python `cryptography` is the source of
   truth.
 - TypeScript reads with `crypto.createPrivateKey({ key, format: "pem", passphrase })`.
-- TypeScript writes must be loadable by Python `load_pem_private_key` /
-  `SecureStateStore.unlock`. Do not document `aes-256-cbc` as the cross-language
-  contract.
+- Each implementation must be able to load the encrypted keys it writes.
+  Do not freeze a cipher name such as `aes-256-cbc` in the contract.
 
 ## Process lock
 
@@ -63,19 +60,16 @@ Python takes an OS advisory lock on `<state-dir>/.lock`: POSIX
 `fcntl.flock(..., LOCK_EX)`; Windows writes `\0` if the file is empty, then
 `msvcrt.locking(..., LK_LOCK, 1)` on the first byte.
 
-TypeScript must call `fs-ext.flock(fd, "ex")` on the same inode on POSIX and
-Windows. If the file is empty (`st_size == 0`), write `\0` and `fsync` before
-locking. Do not create `.lock.lock`.
+TypeScript uses its own advisory lock for its state directory. If the file is
+empty (`st_size == 0`), write `\0` and `fsync` before locking. Do not create
+`.lock.lock`.
 
 `proper-lockfile` is not `flock` and must not be used.
 
-Stock `fs-ext` on Windows locks `LK_LEN` (~4GiB), which overlaps Python's
-1-byte CRT lock. A custom length-1 N-API is allowed only if the later
-`interop-lock` job fails on Windows.
-
-Until that dual-runtime job exists, do not claim the lock is a required Linux
-CI check of the isolated `python` / `typescript` jobs. Without a loaded native
-lock, TypeScript write APIs fail closed.
+Each runtime must enforce locking within its own state directory. Lock
+compatibility between Python and TypeScript is not a requirement because
+cross-runtime state sharing is unsupported. Without a loaded native lock,
+TypeScript write APIs fail closed.
 
 ## pending-send.json
 
@@ -87,9 +81,9 @@ characters. Values may legally contain those substrings.
 Unversioned files (no `schema_version`) map `recipient_did` / `content_sha256`
 to `direct.send`. That legacy branch is mandatory.
 
-The store is a single global slot. A leftover `pending-send.json` from either
-language blocks the next different mutating command. User-facing errors must
-name `pending-send.json`.
+The store is a single slot within one implementation's state directory. A
+leftover `pending-send.json` blocks that implementation's next different
+mutating command. User-facing errors must name `pending-send.json`.
 
 ## Session
 

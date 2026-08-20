@@ -178,13 +178,17 @@ export async function decodeJsonRpcResponse(response: HttpResponse, requestId: s
   if (record.jsonrpc !== '2.0' || record.id !== requestId) {
     throw new ProtocolResponseError('service returned an invalid JSON-RPC envelope');
   }
-  const hasError = 'error' in record;
+  const errorValue = record.error;
+  const hasError = errorValue !== undefined && errorValue !== null;
   const hasResult = 'result' in record;
-  if (hasError === hasResult) {
+  if (hasError && hasResult && record.result !== null) {
+    throw new ProtocolResponseError('service returned an ambiguous JSON-RPC response');
+  }
+  if (!hasError && !hasResult) {
     throw new ProtocolResponseError('service returned an ambiguous JSON-RPC response');
   }
   if (hasError) {
-    const error = record.error;
+    const error = errorValue;
     if (typeof error !== 'object' || error === null || Array.isArray(error)) {
       throw new ProtocolResponseError('service returned an invalid JSON-RPC error');
     }
