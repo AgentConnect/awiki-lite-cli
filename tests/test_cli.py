@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from rich.text import Text
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -37,13 +38,15 @@ def test_msg_help_exposes_only_completed_commands() -> None:
 
     send_help = runner.invoke(app, ["msg", "send", "--help"])
     assert send_help.exit_code == 0
+    send_output = Text.from_ansi(send_help.stdout).plain
     for option in ("--to", "--group", "--text", "--file"):
-        assert option in send_help.stdout
+        assert option in send_output
 
     download_help = runner.invoke(app, ["msg", "attachment", "download", "--help"])
     assert download_help.exit_code == 0
+    download_output = Text.from_ansi(download_help.stdout).plain
     for option in ("--message-id", "--attachment-id", "--output"):
-        assert option in download_help.stdout
+        assert option in download_output
 
 
 def test_group_help_exposes_only_v02_commands() -> None:
