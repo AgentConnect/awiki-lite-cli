@@ -9,7 +9,10 @@ import {
   InvalidInputError,
   JsonRpcFailure,
 } from "../src/application/errors.js";
-import { registrationDomain } from "../src/application/registration.js";
+import {
+  RegistrationWorkflow,
+  registrationDomain,
+} from "../src/application/registration.js";
 import {
   generateIdentity,
   generateOriginProof,
@@ -26,6 +29,65 @@ describe("registration and session", () => {
   test("registration domain comes from the user service URL hostname", () => {
     expect(registrationDomain("https://awiki.info/")).toBe("awiki.info");
     expect(() => registrationDomain("not-a-url")).toThrow(InvalidInputError);
+  });
+
+  test("registration bootstraps sync before publishing the identity", async () => {
+    const root = tempDir();
+    const store = new SecureStateStore(root);
+    const clientInstanceIds: string[] = [];
+    const userService = {
+      baseUrl: "https://example.test",
+      async validateHandle() {
+        return { available: true };
+      },
+      async sendRegistrationOtp() {
+        return true;
+      },
+      async register(document: Record<string, unknown>) {
+        return {
+          state: "registered",
+          did: String(document.id),
+          access_token: "token-1",
+        };
+      },
+    };
+    const syncService = {
+      async bootstrapSync(
+        authenticated: { identity: { deviceId: string } },
+        clientInstanceId: string,
+      ) {
+        clientInstanceIds.push(clientInstanceId);
+        return {
+          accountId: "account-1",
+          deviceId: authenticated.identity.deviceId,
+          serverTime: "2026-08-21T00:00:00Z",
+          streamEpoch: "1",
+          scanSeq: "0",
+        };
+      },
+    };
+    const workflow = new RegistrationWorkflow(
+      userService as never,
+      syncService as never,
+      store,
+      "https://example.test",
+      generateIdentity,
+    );
+    const [handle, phone, domain] = await workflow.begin(
+      "alice",
+      "+15555550100",
+    );
+    const registered = await workflow.finish(
+      handle,
+      phone,
+      domain,
+      "123456",
+      "twelve chars!!",
+    );
+    const installation = store.loadSync(registered.did);
+    expect(store.loadPublic().did).toBe(registered.did);
+    expect(installation?.bootstrap?.deviceId).toBe(registered.deviceId);
+    expect(clientInstanceIds).toEqual([installation?.clientInstanceId]);
   });
 
   test("OTP exemption requires all three conjuncts", async () => {

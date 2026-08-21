@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -54,6 +54,14 @@ function runCli(args: string[]): {
 }
 
 describe("awiki-lite-ts help", () => {
+  test.runIf(process.platform === "win32")(
+    "installs a Windows command shim without a symbolic-link requirement",
+    () => {
+      expect(
+        existsSync(join(here, "../node_modules/.bin/awiki-lite-ts.cmd")),
+      ).toBe(true);
+    },
+  );
   test("root help lists implemented commands twice consistently", () => {
     const first = runCli(["--help"]);
     const second = runCli(["--help"]);
@@ -141,5 +149,24 @@ describe("awiki-lite-ts help", () => {
     expect(conflicting.status).toBe(2);
     expect(missing.stderr).toContain("exactly one");
     expect(conflicting.stderr).toContain("exactly one");
+  });
+
+  test("numeric options reject invalid values before state or network access", () => {
+    for (const args of [
+      ["msg", "inbox", "--limit=-1"],
+      ["msg", "history", "--with", "bob", "--limit=1.5"],
+      ["group", "list", "--limit=NaN"],
+      [
+        "group",
+        "messages",
+        "--group",
+        "did:wba:example.test:group:a",
+        "--since-seq=-1",
+      ],
+    ]) {
+      const result = runCli(args);
+      expect(result.status, args.join(" ")).toBe(2);
+      expect(result.stderr).toContain("Invalid input");
+    }
   });
 });

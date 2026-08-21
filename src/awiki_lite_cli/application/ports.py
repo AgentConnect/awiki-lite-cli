@@ -16,6 +16,8 @@ from awiki_lite_cli.domain.models import (
     IdentityState,
     PendingOperation,
     SessionState,
+    SyncBootstrapState,
+    SyncInstallationState,
     UnlockedIdentity,
 )
 
@@ -24,7 +26,7 @@ class RegistrationServicePort(Protocol):
     base_url: str
 
     async def validate_handle(self, handle: str, domain: str) -> dict[str, Any]: ...
-    async def send_registration_otp(self, handle: str, domain: str, phone: str) -> None: ...
+    async def send_registration_otp(self, handle: str, domain: str, phone: str) -> bool: ...
     async def register(
         self, did_document: dict[str, Any], handle: str, phone: str, otp_code: str
     ) -> dict[str, Any]: ...
@@ -44,6 +46,10 @@ class StateStorePort(Protocol):
         passphrase: str,
     ) -> None: ...
     def finalize_registration(self, identity: IdentityState, access_token: str) -> None: ...
+    def initialize_sync(self, identity_did: str) -> SyncInstallationState: ...
+    def complete_sync_bootstrap(
+        self, installation: SyncInstallationState, bootstrap: SyncBootstrapState
+    ) -> SyncInstallationState: ...
     def prepare_operation(
         self,
         kind: str,
@@ -59,6 +65,12 @@ class StateStorePort(Protocol):
     def advance_operation(self, pending: PendingOperation, next_stage: str) -> PendingOperation: ...
     def save_attachment_contexts(self, contexts: list[AttachmentContext]) -> None: ...
     def load_attachment_context(self, message_id: str, attachment_id: str) -> AttachmentContext: ...
+
+
+class SyncBootstrapServicePort(Protocol):
+    async def bootstrap_sync(
+        self, identity: AuthenticatedIdentity, client_instance_id: str
+    ) -> SyncBootstrapState: ...
 
 
 class GroupServicePort(Protocol):

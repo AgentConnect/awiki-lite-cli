@@ -61,15 +61,17 @@
 
 ### 4.1 注册
 
-- Handle 校验和 scoped OTP 使用 `POST /user-service/handle/rpc`；
+- Handle 校验和 scoped OTP 使用 `POST /user-service/v1/handle/rpc`；
 - OTP 方法为 `send_otp`，purpose 固定为 `awiki.identity.register.v1`；
-- DID 注册使用 `POST /user-service/did-auth/rpc` 的 `register`；
+- DID 注册使用 `POST /user-service/v1/did-auth/rpc` 的 `register`；
 - 必须使用 `anp` 包的公开 Python API 生成 DID、Manifest 和 W3C proof，不复制密码学实现；
 - User Service 要求 one-device Manifest 时，只生成一个本机设备。Manifest 是 wire 兼容要求，不代表 CLI 支持多设备；
 - User Service 当前注册校验器要求 Manifest 使用固定的六项 canonical profile bundle；
   因此 Manifest 会包含 Direct/Group E2EE profile 标识。它们只是服务端注册兼容字段，
   Lite CLI 的命令、payload builder 和运行时 feature gate 仍只允许 Direct Base；
-- 服务地址默认 `https://awiki.info`，测试可通过显式环境变量覆盖。
+- 注册成功发布本地身份前，使用 exact-device token 调用一次 `sync.bootstrap`；请求前先持久化随机、不透明且可重试复用的 `client_instance_id`；
+- 只接受设备匹配的 `tail_only`。`compact_recovery_required` 明确报错并交由完整版 AWiki CLI 处理，Lite 不保存 recovery token，也不实现 snapshot/delta 本地投影；
+- 服务地址默认 `https://awiki.ai`，测试可通过显式环境变量覆盖。
 
 ### 4.2 私聊发送
 
@@ -91,6 +93,7 @@
 - 三者都是本域 local-only 视图，使用 hop-level 身份认证，不生成 origin proof；
 - 首版只读取 `transport-protected` 普通消息；不得请求 `direct-e2ee` selector；
 - 使用服务端 `limit/skip` 或当前契约规定的游标分页，不自行拼装可靠同步 checkpoint。
+- 旧版 Lite 身份没有同步登记文件时，先保留能够返回非空结果的 legacy 读取；只有第一页得到空页时才自动 bootstrap 并重试，避免把正常的越界分页误判为未登记。
 
 ## 5. 用户命令面
 
@@ -149,6 +152,7 @@ infrastructure/
 │   ├── device-signing.pem    # 口令加密的 PKCS#8 PEM
 │   └── device-agreement.pem  # 仅当 Manifest 必需；同样加密
 ├── session.json              # 可撤销 access token 及过期信息，不含私钥
+├── sync-installation.json    # 随机安装 ID 和 tail-only 游标，不含 token/消息
 ├── pending-registration.json # 响应丢失时的最小恢复上下文
 └── pending-send.json         # 未知发送结果的非秘密幂等重建参数
 ```

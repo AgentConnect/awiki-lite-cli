@@ -36,11 +36,20 @@ def run(
     message_service_url: Annotated[
         str | None, typer.Option("--message-service-url", hidden=True)
     ] = None,
+    ca_bundle: Annotated[Path | None, typer.Option("--ca-bundle", hidden=True)] = None,
 ) -> None:
     """Listen in the foreground until interrupted with Ctrl-C."""
     settings = Settings.from_env()
     selected_state_dir = state_dir or settings.state_dir
     selected_service_url = message_service_url or settings.message_service_url
+    selected_ca_bundle = ca_bundle or settings.ca_bundle
+    selected_tls = Settings(
+        settings.user_service_url,
+        selected_service_url,
+        selected_state_dir,
+        selected_ca_bundle,
+        settings.allow_private_network,
+    ).tls_context()
     store = SecureStateStore(selected_state_dir)
     try:
         identity = store.load_public()
@@ -72,6 +81,7 @@ def run(
                 render,
                 once=once,
                 on_reconnect=reconnect,
+                ssl_context=None if selected_tls is True else selected_tls,
             )
         )
     except KeyboardInterrupt:
@@ -142,7 +152,11 @@ def _service_action(
         if require_identity:
             store.load_public()
             store.load_session()
-        manager = service_manager(settings.state_dir, settings.message_service_url)
+        manager = service_manager(
+            settings.state_dir,
+            settings.message_service_url,
+            ca_bundle=settings.ca_bundle,
+        )
         operation = getattr(manager, action)
         result: ListenerServiceStatus = operation()
     except (ListenerServiceError, StateError) as exc:

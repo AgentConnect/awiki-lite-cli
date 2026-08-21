@@ -1,5 +1,3 @@
-import { basename } from "node:path";
-
 import { Command, Option } from "commander";
 
 import {
@@ -23,14 +21,25 @@ import {
 import { createRuntime, wrapMain } from "./runtime.js";
 
 export function listenerRuntime(
-  options: { stateDir?: string; messageServiceUrl?: string } = {},
+  options: {
+    stateDir?: string;
+    messageServiceUrl?: string;
+    caBundle?: string;
+  } = {},
 ) {
-  const overrides: { stateDir?: string; messageServiceUrl?: string } = {};
+  const overrides: {
+    stateDir?: string;
+    messageServiceUrl?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {};
   if (options.stateDir !== undefined) {
     overrides.stateDir = options.stateDir;
   }
   if (options.messageServiceUrl !== undefined) {
     overrides.messageServiceUrl = options.messageServiceUrl;
+  }
+  if (options.caBundle !== undefined) {
+    overrides.env = { ...process.env, AWIKI_LITE_CA_BUNDLE: options.caBundle };
   }
   return createRuntime(overrides);
 }
@@ -61,6 +70,8 @@ export function runListenerServiceAction(
   const context = currentServiceContext(
     settings.stateDir,
     settings.messageServiceUrl,
+    process.argv,
+    { caBundle: settings.caBundle },
   );
   if (options.manager) {
     return options.manager[action]();
@@ -99,6 +110,7 @@ export function registerListenerCommand(
     .addOption(new Option("--service-mode").hideHelp())
     .addOption(new Option("--state-dir <dir>").hideHelp())
     .addOption(new Option("--message-service-url <url>").hideHelp())
+    .addOption(new Option("--ca-bundle <path>").hideHelp())
     .action(
       (options: {
         once?: boolean;
@@ -106,6 +118,7 @@ export function registerListenerCommand(
         serviceMode?: boolean;
         stateDir?: string;
         messageServiceUrl?: string;
+        caBundle?: string;
       }) => {
         wrapMain("listener", async () => {
           const { settings, store } = listenerRuntime({
@@ -114,6 +127,9 @@ export function registerListenerCommand(
               : {}),
             ...(options.messageServiceUrl !== undefined
               ? { messageServiceUrl: options.messageServiceUrl }
+              : {}),
+            ...(options.caBundle !== undefined
+              ? { caBundle: options.caBundle }
               : {}),
           });
           const session = store.loadSession();
@@ -145,13 +161,13 @@ export function registerListenerCommand(
                 onReconnect: (delay) => {
                   console.error(`Connection lost; retrying in ${delay}s.`);
                 },
+                caBundle: settings.caBundle,
               },
             );
           } catch (error) {
             if (error instanceof ListenerAuthenticationError) {
-              const argv0 = basename(process.argv[1] ?? "awiki-lite-ts");
               console.error(
-                `Listener session expired; run \`${argv0} id refresh-token\`, then restart it.`,
+                "Listener session expired; run `awiki-lite-ts id refresh-token`, then restart it.",
               );
               if (options.serviceMode) {
                 return;

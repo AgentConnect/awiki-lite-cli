@@ -21,6 +21,22 @@ class SessionState:
 
 
 @dataclass(frozen=True, slots=True)
+class SyncBootstrapState:
+    account_id: str
+    device_id: str
+    server_time: str
+    stream_epoch: str
+    scan_seq: str
+
+
+@dataclass(frozen=True, slots=True)
+class SyncInstallationState:
+    identity_did: str
+    client_instance_id: str
+    bootstrap: SyncBootstrapState | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PendingSend:
     recipient_did: str
     content_sha256: str

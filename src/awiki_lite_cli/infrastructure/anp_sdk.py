@@ -190,6 +190,7 @@ async def resolve_attachment_service_did(
     *,
     client: httpx.AsyncClient | None = None,
     address_resolver: AddressResolver = resolve_public_addresses,
+    allow_private_network: bool = False,
 ) -> str:
     """Resolve and proof-check the sender's compatible ANPMessageService serviceDid."""
     validate_wba_did(sender_did, field="attachment sender DID")
@@ -199,6 +200,7 @@ async def resolve_attachment_service_did(
             resolution_url,
             resolver=address_resolver,
             field="attachment sender DID URL",
+            allow_private_network=allow_private_network,
         )
         owns_client = client is None
         active_client = client or httpx.AsyncClient(timeout=10.0, trust_env=False)

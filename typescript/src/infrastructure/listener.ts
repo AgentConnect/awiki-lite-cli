@@ -1,10 +1,11 @@
-import { URL } from 'node:url';
+import { readFileSync } from "node:fs";
+import { URL } from "node:url";
 
-import WebSocket from 'ws';
+import WebSocket from "ws";
 
-import { CLIENT_IDENTIFIER } from '../version.js';
+import { CLIENT_IDENTIFIER } from "../version.js";
 
-export const SYNC_SUBPROTOCOL = 'awiki.sync.changed.v2';
+export const SYNC_SUBPROTOCOL = "awiki.sync.changed.v2";
 export const PING_INTERVAL_SECONDS = 60;
 export const PING_TIMEOUT_SECONDS = 15;
 export const HANDSHAKE_TIMEOUT_SECONDS = 15;
@@ -25,14 +26,14 @@ const SYNC_TOKEN = /^[a-z][a-z0-9._-]{0,63}$/;
 export class ListenerError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'ListenerError';
+    this.name = "ListenerError";
   }
 }
 
 export class ListenerAuthenticationError extends ListenerError {
   constructor(message: string) {
     super(message);
-    this.name = 'ListenerAuthenticationError';
+    this.name = "ListenerAuthenticationError";
   }
 }
 
@@ -48,7 +49,7 @@ export function syncChangedToJson(event: SyncChanged): string {
     account_scan_seq_hint: event.accountScanSeqHint,
     domain_versions: event.domainVersions,
     domains: [...event.domains],
-    event: 'sync.changed',
+    event: "sync.changed",
     reason: event.reason,
   });
 }
@@ -58,11 +59,20 @@ export function websocketUrl(serviceBaseUrl: string): string {
   try {
     parsed = new URL(serviceBaseUrl);
   } catch {
-    throw new ListenerError('message service URL is not a safe HTTP(S) endpoint');
+    throw new ListenerError(
+      "message service URL is not a safe HTTP(S) endpoint",
+    );
   }
-  const scheme = parsed.protocol === 'https:' ? 'wss:' : parsed.protocol === 'http:' ? 'ws:' : null;
+  const scheme =
+    parsed.protocol === "https:"
+      ? "wss:"
+      : parsed.protocol === "http:"
+        ? "ws:"
+        : null;
   if (scheme === null || !parsed.host || parsed.username || parsed.password) {
-    throw new ListenerError('message service URL is not a safe HTTP(S) endpoint');
+    throw new ListenerError(
+      "message service URL is not a safe HTTP(S) endpoint",
+    );
   }
   return `${scheme}//${parsed.host}/im/ws`;
 }
@@ -72,21 +82,30 @@ export function parseSyncChanged(raw: string | Buffer): SyncChanged {
   try {
     value = JSON.parse(raw.toString());
   } catch {
-    throw new ListenerError('websocket notification is not valid JSON');
+    throw new ListenerError("websocket notification is not valid JSON");
   }
-  if (typeof value !== 'object' || value === null || (value as Record<string, unknown>).method !== 'sync.changed') {
-    throw new ListenerError('websocket sent an unsupported notification');
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    (value as Record<string, unknown>).method !== "sync.changed"
+  ) {
+    throw new ListenerError("websocket sent an unsupported notification");
   }
   const record = value as Record<string, unknown>;
-  const hasPayload = 'payload' in record;
-  const hasParams = 'params' in record;
+  const hasPayload = "payload" in record;
+  const hasParams = "params" in record;
   if (hasPayload === hasParams) {
-    throw new ListenerError('sync.changed notification has an invalid shape');
+    throw new ListenerError("sync.changed notification has an invalid shape");
   }
   const payload = hasPayload ? record.payload : record.params;
   const sync = record.sync;
-  if (typeof payload !== 'object' || payload === null || typeof sync !== 'object' || sync === null) {
-    throw new ListenerError('sync.changed notification has an invalid shape');
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    typeof sync !== "object" ||
+    sync === null
+  ) {
+    throw new ListenerError("sync.changed notification has an invalid shape");
   }
   const body = payload as Record<string, unknown>;
   const meta = sync as Record<string, unknown>;
@@ -96,26 +115,29 @@ export function parseSyncChanged(raw: string | Buffer): SyncChanged {
   if (
     !Array.isArray(domains) ||
     domains.length === 0 ||
-    domains.some((item) => typeof item !== 'string' || !SYNC_TOKEN.test(item)) ||
-    typeof reason !== 'string' ||
+    domains.some(
+      (item) => typeof item !== "string" || !SYNC_TOKEN.test(item),
+    ) ||
+    typeof reason !== "string" ||
     !SYNC_TOKEN.test(reason) ||
     meta.schema_version !== 2 ||
     (meta.account_scan_seq_hint !== undefined &&
       meta.account_scan_seq_hint !== null &&
       !canonicalDecimal(meta.account_scan_seq_hint)) ||
-    typeof versions !== 'object' ||
+    typeof versions !== "object" ||
     versions === null ||
     Object.entries(versions as Record<string, unknown>).some(
       ([key, version]) => !key || !canonicalDecimal(version),
     )
   ) {
-    throw new ListenerError('sync.changed notification has invalid fields');
+    throw new ListenerError("sync.changed notification has invalid fields");
   }
   return {
     domains: domains as string[],
     reason,
     accountScanSeqHint:
-      meta.account_scan_seq_hint === undefined || meta.account_scan_seq_hint === null
+      meta.account_scan_seq_hint === undefined ||
+      meta.account_scan_seq_hint === null
         ? null
         : String(meta.account_scan_seq_hint),
     domainVersions: versions as Record<string, string>,
@@ -126,6 +148,7 @@ export interface ListenOptions {
   once?: boolean;
   connectFactory?: typeof connectWebSocket;
   onReconnect?: (delay: number) => void;
+  caBundle?: string | null;
 }
 
 export async function listen(
@@ -139,7 +162,7 @@ export async function listen(
   let delay = 1;
   while (true) {
     try {
-      const socket = connect(endpoint, accessToken);
+      const socket = connect(endpoint, accessToken, options.caBundle ?? null);
       await new Promise<void>((resolve, reject) => {
         const queue: Array<string | Buffer> = [];
         let draining = false;
@@ -190,29 +213,37 @@ export async function listen(
         const onOpen = (): void => {
           if (socket.protocol !== SYNC_SUBPROTOCOL) {
             void closeSocket(socket);
-            fail(new ListenerError('websocket server did not select awiki.sync.changed.v2'));
+            fail(
+              new ListenerError(
+                "websocket server did not select awiki.sync.changed.v2",
+              ),
+            );
           }
         };
 
-        socket.on('message', (data) => {
+        socket.on("message", (data) => {
           if (queue.length >= LISTENER_WS_OPTIONS.maxQueue) {
             socket.terminate();
-            fail(new ListenerError('websocket receive queue is full'));
+            fail(new ListenerError("websocket receive queue is full"));
             return;
           }
           queue.push(data.toString());
           drain();
         });
-        socket.on('unexpected-response', (_req, res) => {
+        socket.on("unexpected-response", (_req, res) => {
           if (res.statusCode === 401 || res.statusCode === 403) {
-            fail(new ListenerAuthenticationError('websocket session is unauthorized'));
+            fail(
+              new ListenerAuthenticationError(
+                "websocket session is unauthorized",
+              ),
+            );
             return;
           }
-          fail(new ListenerError('websocket handshake failed'));
+          fail(new ListenerError("websocket handshake failed"));
         });
-        socket.on('error', (error) => fail(error));
-        socket.on('close', () => succeed());
-        socket.on('open', onOpen);
+        socket.on("error", (error) => fail(error));
+        socket.on("close", () => succeed());
+        socket.on("open", onOpen);
         if (socket.readyState === WebSocket.OPEN) {
           onOpen();
         }
@@ -231,16 +262,21 @@ export async function listen(
   }
 }
 
-export function connectWebSocket(endpoint: string, accessToken: string): WebSocket {
+export function connectWebSocket(
+  endpoint: string,
+  accessToken: string,
+  caBundle: string | null = null,
+): WebSocket {
   const socket = new WebSocket(endpoint, SYNC_SUBPROTOCOL, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
-      'X-AWiki-Client-Version': CLIENT_IDENTIFIER,
+      "X-AWiki-Client-Version": CLIENT_IDENTIFIER,
     },
     handshakeTimeout: LISTENER_WS_OPTIONS.handshakeTimeoutMs,
     maxPayload: LISTENER_WS_OPTIONS.maxPayloadBytes,
     followRedirects: false,
     agent: LISTENER_WS_OPTIONS.proxy ?? undefined,
+    ...(caBundle ? { ca: readFileSync(caBundle) } : {}),
   });
   let pongWatch: NodeJS.Timeout | undefined;
   const pingTimer = setInterval(() => {
@@ -255,7 +291,7 @@ export function connectWebSocket(endpoint: string, accessToken: string): WebSock
       socket.terminate();
     }, LISTENER_WS_OPTIONS.pingTimeoutMs);
   }, LISTENER_WS_OPTIONS.pingIntervalMs);
-  socket.on('pong', () => {
+  socket.on("pong", () => {
     if (pongWatch !== undefined) {
       clearTimeout(pongWatch);
       pongWatch = undefined;
@@ -267,8 +303,8 @@ export function connectWebSocket(endpoint: string, accessToken: string): WebSock
       clearTimeout(pongWatch);
     }
   };
-  socket.once('error', () => cleanup());
-  socket.once('close', () => cleanup());
+  socket.once("error", () => cleanup());
+  socket.once("close", () => cleanup());
   return socket;
 }
 
@@ -281,7 +317,7 @@ export function closeSocket(socket: WebSocket): Promise<void> {
       socket.terminate();
       resolve();
     }, LISTENER_WS_OPTIONS.closeTimeoutMs);
-    socket.once('close', () => {
+    socket.once("close", () => {
       clearTimeout(timer);
       resolve();
     });
@@ -290,5 +326,5 @@ export function closeSocket(socket: WebSocket): Promise<void> {
 }
 
 function canonicalDecimal(value: unknown): boolean {
-  return typeof value === 'string' && /^0$|^[1-9][0-9]*$/.test(value);
+  return typeof value === "string" && /^0$|^[1-9][0-9]*$/.test(value);
 }

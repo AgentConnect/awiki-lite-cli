@@ -29,6 +29,7 @@ def send(
     stdin: bool = typer.Option(False, "--stdin", help="Read message text from standard input."),
 ) -> None:
     """Send a plain text message to one DID or handle."""
+    settings = Settings.from_env()
     if stdin and text is not None:
         typer.echo("Invalid input: TEXT and --stdin are mutually exclusive", err=True)
         raise typer.Exit(2)
@@ -38,7 +39,10 @@ def send(
 
     async def action(service: MessageService, store: SecureStateStore) -> ChatMessage:
         recipient = await resolve_peer_did(
-            service.client, recipient_did, store.load_public().handle
+            service.client,
+            recipient_did,
+            store.load_public().handle,
+            allow_private_network=settings.allow_private_network,
         )
         if not text_value or not text_value.strip():
             raise ValueError("message text must not be empty")
@@ -87,7 +91,7 @@ def inbox(
         service: MessageService, store: SecureStateStore
     ) -> tuple[list[ChatMessage], bool, int]:
         identity = AuthenticatedIdentity(store.load_public(), store.load_session())
-        messages, has_more = await service.inbox(identity, limit, skip)
+        messages, has_more = await _inbox_with_sync(service, store, identity, limit, skip)
         _save_attachment_contexts(store, messages)
         updated = (
             await service.mark_read(identity, [item.message_id for item in messages])
@@ -116,13 +120,19 @@ def history(
     ),
 ) -> None:
     """Read plain-message history with one DID or handle."""
+    settings = Settings.from_env()
 
     async def action(
         service: MessageService, store: SecureStateStore
     ) -> tuple[list[ChatMessage], bool]:
         identity = AuthenticatedIdentity(store.load_public(), store.load_session())
-        peer = await resolve_peer_did(service.client, peer_did, identity.identity.handle)
-        messages, has_more = await service.history(identity, peer, limit, skip)
+        peer = await resolve_peer_did(
+            service.client,
+            peer_did,
+            identity.identity.handle,
+            allow_private_network=settings.allow_private_network,
+        )
+        messages, has_more = await _history_with_sync(service, store, identity, peer, limit, skip)
         _save_attachment_contexts(store, messages)
         return messages, has_more
 
@@ -137,7 +147,9 @@ def _run(action: Callable[[MessageService, SecureStateStore], Awaitable[T]]) -> 
     store = SecureStateStore(settings.state_dir)
 
     async def invoke() -> T:
-        async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
+        async with httpx.AsyncClient(
+            timeout=20.0, trust_env=False, verify=settings.tls_context()
+        ) as client:
             return await action(MessageService(client, settings.message_service_url), store)
 
     try:
@@ -156,6 +168,71 @@ def _run(action: Callable[[MessageService, SecureStateStore], Awaitable[T]]) -> 
     except (StateError, RuntimeError, httpx.HTTPError) as exc:
         typer.echo(f"Messaging failed: {exc}", err=True)
         raise typer.Exit(1) from None
+
+
+async def _bootstrap_tracked_installation(
+    service: MessageService,
+    store: SecureStateStore,
+    identity: AuthenticatedIdentity,
+) -> None:
+    installation = store.load_sync(identity.identity.did)
+    if installation is None or installation.bootstrap is not None:
+        return
+    bootstrap = await service.bootstrap_sync(identity, installation.client_instance_id)
+    store.complete_sync_bootstrap(installation, bootstrap)
+
+
+async def _inbox_with_sync(
+    service: MessageService,
+    store: SecureStateStore,
+    identity: AuthenticatedIdentity,
+    limit: int,
+    skip: int,
+) -> tuple[list[ChatMessage], bool]:
+    await _bootstrap_tracked_installation(service, store, identity)
+    messages, has_more = await service.inbox(identity, limit, skip)
+    if (
+        skip == 0
+        and not messages
+        and not has_more
+        and store.load_sync(identity.identity.did) is None
+    ):
+        await _bootstrap_legacy_installation(service, store, identity)
+        return await service.inbox(identity, limit, skip)
+    return messages, has_more
+
+
+async def _history_with_sync(
+    service: MessageService,
+    store: SecureStateStore,
+    identity: AuthenticatedIdentity,
+    peer: str,
+    limit: int,
+    skip: int,
+) -> tuple[list[ChatMessage], bool]:
+    await _bootstrap_tracked_installation(service, store, identity)
+    messages, has_more = await service.history(identity, peer, limit, skip)
+    if (
+        skip == 0
+        and not messages
+        and not has_more
+        and store.load_sync(identity.identity.did) is None
+    ):
+        await _bootstrap_legacy_installation(service, store, identity)
+        return await service.history(identity, peer, limit, skip)
+    return messages, has_more
+
+
+async def _bootstrap_legacy_installation(
+    service: MessageService,
+    store: SecureStateStore,
+    identity: AuthenticatedIdentity,
+) -> None:
+    installation = store.initialize_sync(identity.identity.did)
+    if installation.bootstrap is not None:
+        return
+    bootstrap = await service.bootstrap_sync(identity, installation.client_instance_id)
+    store.complete_sync_bootstrap(installation, bootstrap)
 
 
 def _render(messages: list[ChatMessage]) -> None:

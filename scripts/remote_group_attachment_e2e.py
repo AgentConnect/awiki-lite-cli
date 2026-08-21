@@ -24,6 +24,7 @@ from awiki_lite_cli.application.attachments import AttachmentWorkflow
 from awiki_lite_cli.application.groups import GroupWorkflow
 from awiki_lite_cli.application.registration import RegistrationWorkflow
 from awiki_lite_cli.domain.models import AttachmentContext, AuthenticatedIdentity
+from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
 from awiki_lite_cli.infrastructure.attachment_service import AttachmentService
 from awiki_lite_cli.infrastructure.group_service import GroupService
 from awiki_lite_cli.infrastructure.message_service import MessageService
@@ -80,9 +81,15 @@ async def _run(repo_root: Path, values: dict[str, str]) -> None:
                 passphrase_a,
                 tolerate_sms_failure=True,
             )
-            flow_b = RegistrationWorkflow(UserService(client, SERVICE_URL), store_b, SERVICE_URL)
+            flow_b = RegistrationWorkflow(
+                UserService(client, SERVICE_URL),
+                MessageService(client, SERVICE_URL),
+                store_b,
+                SERVICE_URL,
+                generate_identity,
+            )
             try:
-                canonical_b, canonical_phone_b, domain_b = await flow_b.begin(handle_b, phone_b)
+                canonical_b, canonical_phone_b, domain_b, _ = await flow_b.begin(handle_b, phone_b)
             except JsonRpcFailure:
                 canonical_b, canonical_phone_b, domain_b = handle_b, phone_b, "awiki.info"
             otp_b = _resolve_peer_otp(operator, phone_b, handle_b)

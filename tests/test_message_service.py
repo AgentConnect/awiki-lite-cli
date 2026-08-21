@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 
+from awiki_lite_cli.application.errors import SyncRecoveryRequiredError
 from awiki_lite_cli.domain.models import (
     AttachmentRef,
     AuthenticatedIdentity,
@@ -19,9 +20,10 @@ from awiki_lite_cli.infrastructure.message_service import (
     build_capabilities,
     build_direct_attachment_send,
     build_direct_send,
+    build_history,
+    build_inbox,
     build_mark_read,
-    build_sync_delta,
-    build_sync_thread_after,
+    build_sync_bootstrap,
 )
 from awiki_lite_cli.infrastructure.rpc import ProtocolResponseError
 
@@ -87,21 +89,65 @@ def test_direct_builder_rejects_invalid_inputs() -> None:
 def test_read_builders_use_local_profiles_without_auth() -> None:
     did = "did:wba:example.test:user:alice:e1_fixture"
     assert build_mark_read(did, ["m1"])["body"]["message_ids"] == ["m1"]
-    delta = build_sync_delta(did, "0")
-    assert delta["meta"]["profile"] == "anp.sync.local.v1"
-    assert delta["body"]["since_event_seq"] == "0"
-    thread = build_sync_thread_after(did, "did:wba:example.test:user:bob:e1_fixture", "42")
-    assert thread["meta"]["profile"] == "anp.sync.local.v1"
-    assert thread["body"]["thread"] == {
-        "kind": "direct",
-        "peer_did": "did:wba:example.test:user:bob:e1_fixture",
-    }
-    assert thread["body"]["after_server_seq"] == "42"
-    assert "auth" not in delta
+    inbox = build_inbox(did, 20, 2)
+    assert inbox["meta"]["profile"] == "anp.inbox.local.v1"
+    assert inbox["body"]["limit"] == 20
+    assert inbox["body"]["skip"] == 2
+    history = build_history(did, "did:wba:example.test:user:bob:e1_fixture", 50, 3)
+    assert history["meta"]["profile"] == "anp.direct.local.v1"
+    assert history["body"]["peer_did"] == "did:wba:example.test:user:bob:e1_fixture"
+    assert history["body"]["skip"] == 3
+    assert "auth" not in inbox
     capabilities = build_capabilities(did)
     assert capabilities["meta"]["profile"] == "anp.core.binding.v1"
     assert capabilities["meta"]["sender_did"] == did
     assert capabilities["body"] == {}
+
+
+def test_sync_bootstrap_builder_matches_v2_contract() -> None:
+    did = unlocked().identity.did
+    params = build_sync_bootstrap(did, "lite-installation-fixture")
+    assert params["meta"]["profile"] == "anp.sync.local.v2"
+    assert params["meta"]["sender_did"] == did
+    assert params["body"] == {
+        "client_instance_id": "lite-installation-fixture",
+        "capabilities": {"sync_profile": "anp.sync.local.v2", "event_schema_max": 1},
+    }
+
+
+@pytest.mark.asyncio
+async def test_sync_bootstrap_accepts_tail_only_and_rejects_recovery() -> None:
+    identity = unlocked()
+    authenticated = AuthenticatedIdentity(identity.identity, identity.session)
+    mode = "tail_only"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["method"] == "sync.bootstrap"
+        assert request.headers["Authorization"] == "Bearer token"
+        result = (
+            {
+                "mode": "tail_only",
+                "account_id": "account-1",
+                "device_id": identity.identity.device_id,
+                "server_time": "2026-08-21T00:00:00Z",
+                "cursor": {"stream_epoch": "1", "scan_seq": "7"},
+                "read_state_baseline": [],
+                "group_state_baseline": [],
+                "warnings": [],
+            }
+            if mode == "tail_only"
+            else {"mode": "compact_recovery_required", "recovery": {"token": "secret"}}
+        )
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        service = MessageService(client, "https://example.test")
+        state = await service.bootstrap_sync(authenticated, "lite-installation-fixture")
+        assert state.scan_seq == "7"
+        mode = "compact_recovery_required"
+        with pytest.raises(SyncRecoveryRequiredError, match="full sync recovery"):
+            await service.bootstrap_sync(authenticated, "lite-installation-fixture")
 
 
 def attachment() -> AttachmentRef:
@@ -178,38 +224,21 @@ async def test_direct_inbox_projects_valid_plain_attachment() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        if body["method"] == "sync.delta":
-            result = {
-                "events": [
-                    {
-                        "payload": {
-                            "thread": {
-                                "kind": "direct",
-                                "peer_did": "did:wba:example.test:user:bob:e1_fixture",
-                            }
-                        }
-                    }
-                ],
-                "has_more": False,
-                "snapshot_required": False,
-            }
-        else:
-            assert body["method"] == "sync.thread_after"
-            result = {
-                "messages": [
-                    {
-                        "id": "msg",
-                        "sender_did": "did:wba:example.test:user:bob:e1_fixture",
-                        "receiver_did": public.identity.did,
-                        "content_type": "application/anp-attachment-manifest+json",
-                        "content": manifest,
-                        "sent_at": "now",
-                        "is_read": False,
-                    }
-                ],
-                "next_after_server_seq": "1",
-                "has_more": False,
-            }
+        assert body["method"] == "inbox.get"
+        result = {
+            "messages": [
+                {
+                    "id": "msg",
+                    "sender_did": "did:wba:example.test:user:bob:e1_fixture",
+                    "receiver_did": public.identity.did,
+                    "content_type": "application/anp-attachment-manifest+json",
+                    "content": manifest,
+                    "sent_at": "now",
+                    "is_read": False,
+                }
+            ],
+            "has_more": False,
+        }
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -251,26 +280,8 @@ async def test_direct_inbox_rejects_malformed_remote_shapes(message, has_more) -
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        if body["method"] == "sync.delta":
-            result = {
-                "events": [
-                    {
-                        "payload": {
-                            "thread": {
-                                "kind": "direct",
-                                "peer_did": "did:wba:example.test:user:bob:e1_fixture",
-                            }
-                        }
-                    }
-                ],
-                "has_more": False,
-            }
-        else:
-            result = {
-                "messages": [message],
-                "has_more": has_more,
-                "next_after_server_seq": "1",
-            }
+        assert body["method"] == "inbox.get"
+        result = {"messages": [message], "has_more": has_more}
         return httpx.Response(
             200,
             json={

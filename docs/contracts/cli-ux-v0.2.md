@@ -36,7 +36,7 @@ Language does not appear in the token.
 | `group members` | `--group GROUP_DID`, `--limit`, hidden `--cursor` | |
 | `group add` | `--group GROUP_DID`, `--member PEER` | `PEER` is a DID or handle; role is fixed `member` |
 | `group messages` | `--group GROUP_DID`, `--limit`, hidden `--since-seq` | Attachment rows use Manifest rendering |
-| `runtime listener run` | `--once`, `--json`; hidden `--service-mode`, `--state-dir`, `--message-service-url` | |
+| `runtime listener run` | `--once`, `--json`; hidden `--service-mode`, `--state-dir`, `--message-service-url`, `--ca-bundle` | |
 | `runtime listener install` / `start` / `stop` / `restart` / `status` / `uninstall` | `status --json` | |
 
 The visible root command groups are exactly `id`, `msg`, `group`, and `runtime`.
@@ -65,7 +65,7 @@ lookup.
 | Invalid argument / `ValueError` | 2 | `Invalid input: ...` |
 | Unregistered, local state, network, `RuntimeError` | 1 | `Registration failed` / `Messaging failed` / equivalent |
 | JSON-RPC error | 1 | `... rejected the request (JSON-RPC code {n}).` Do **not** echo `message` or `data` |
-| HTTP 401 / JSON-RPC 1401 / `"unauthorized"` | 1 | `Session expired; run \`${basename(argv[0])} id refresh-token\`.` |
+| HTTP 401 / JSON-RPC 1401 / `"unauthorized"` | 1 | `Session expired; run \`<executable> id refresh-token\`.` |
 
 **401 does not delete `session.json`.** The process only prints the refresh
 hint. Commander will not do this mapping automatically; TypeScript must

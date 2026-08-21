@@ -15,7 +15,13 @@ export function normalizePeerReference(
 ): { value: string; isDid: boolean } {
   let raw = value.trim();
   if (raw.startsWith("did:")) {
-    return { value: validateWbaDid(raw, "peer"), isDid: true };
+    try {
+      return { value: validateWbaDid(raw, "peer"), isDid: true };
+    } catch (error) {
+      throw new InvalidInputError(
+        error instanceof Error ? error.message : "peer is invalid",
+      );
+    }
   }
   if (raw.startsWith("@")) {
     raw = raw.slice(1);
@@ -45,6 +51,7 @@ export async function resolvePeerDid(
   client: HttpClient,
   value: string,
   ownerHandle: string,
+  options: { allowPrivateNetwork?: boolean } = {},
 ): Promise<string> {
   const peer = normalizePeerReference(value, ownerHandle);
   if (peer.isDid) {
@@ -56,6 +63,7 @@ export async function resolvePeerDid(
     client,
     buildResolutionUrl(localPart, domain),
     "handle resolution URL",
+    options.allowPrivateNetwork,
   );
   if (resolution.handle !== peer.value || resolution.status !== "active") {
     throw new Error(
@@ -82,7 +90,12 @@ export async function resolvePeerDid(
   const didUrl = segments.length
     ? `https://${domain}/${segments.join("/")}/did.json`
     : `https://${domain}/.well-known/did.json`;
-  const document = await getPublicJson(client, didUrl, "peer DID URL");
+  const document = await getPublicJson(
+    client,
+    didUrl,
+    "peer DID URL",
+    options.allowPrivateNetwork,
+  );
   try {
     verifyResolvedDocument(did, document);
   } catch {
@@ -95,10 +108,14 @@ async function getPublicJson(
   client: HttpClient,
   url: string,
   field: string,
+  allowPrivateNetwork = false,
 ): Promise<Record<string, unknown>> {
-  const target = await pinHttpsUrl(url, { field });
+  const target = await pinHttpsUrl(url, { field, allowPrivateNetwork });
   const response = await client.get(target.url, {
     headers: pinnedHeaders(target, { Accept: "application/json" }),
+    pinnedAddress: target.address,
+    pinnedFamily: target.family,
+    serverHostname: target.serverHostname,
   });
   if (!response.ok) {
     throw new Error(`unable to read ${field}`);

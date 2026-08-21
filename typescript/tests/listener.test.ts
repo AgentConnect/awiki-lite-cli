@@ -25,6 +25,7 @@ import {
   serviceManager,
   unitContents,
   unitPath,
+  windowsCommandLine,
   type CommandRunner,
 } from "../src/infrastructure/listener-service.js";
 import { DEFAULT_STATE_APPNAME } from "../src/config.js";
@@ -174,6 +175,50 @@ describe("listener runtime, websocket options, and service actions", () => {
     manager.start();
     manager.restart();
     expect(commands.some((item) => item.includes("restart"))).toBe(true);
+  });
+
+  test("Windows task command quotes paths containing spaces", () => {
+    const line = windowsCommandLine([
+      String.raw`C:\Program Files\nodejs\node.exe`,
+      String.raw`C:\Users\Example User\awiki\cli.js`,
+      "runtime",
+    ]);
+    expect(line).toBe(
+      String.raw`"C:\Program Files\nodejs\node.exe" "C:\Users\Example User\awiki\cli.js" runtime`,
+    );
+  });
+
+  test("Windows task status uses the language-independent PowerShell state", () => {
+    const context = currentServiceContext(
+      tempDir(),
+      "https://awiki.ai",
+      process.argv,
+      { platform: "win32" },
+    );
+    const commands: string[][] = [];
+    const runner: CommandRunner = {
+      run(command) {
+        commands.push([...command]);
+        return command[0] === "schtasks.exe"
+          ? { status: 0, stdout: "localized task output" }
+          : { status: 0, stdout: "Running\n" };
+      },
+    };
+
+    const status = serviceManager(context, runner).status();
+
+    expect(status).toMatchObject({
+      platform: "windows-scheduled-task",
+      installed: true,
+      running: true,
+      state: "running",
+    });
+    expect(commands[1]?.slice(0, 3)).toEqual([
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+    ]);
+    expect(commands[1]?.at(-1)).toContain("Get-ScheduledTask");
   });
 
   test("runListenerServiceAction start requires a registered identity", () => {

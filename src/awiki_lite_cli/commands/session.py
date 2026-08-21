@@ -35,7 +35,9 @@ async def _refresh(passphrase: str) -> str:
     store = SecureStateStore(settings.state_dir)
     identity = store.load_public()
     signing_key = store.load_device_signing_key(passphrase)
-    async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
+    async with httpx.AsyncClient(
+        timeout=20.0, trust_env=False, verify=settings.tls_context()
+    ) as client:
         token = await UserService(client, settings.user_service_url).refresh_session(
             identity, signing_key
         )

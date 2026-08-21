@@ -42,6 +42,7 @@ async def pin_https_url(
     *,
     resolver: AddressResolver = resolve_public_addresses,
     field: str = "URL",
+    allow_private_network: bool = False,
 ) -> PinnedHttpsTarget:
     """Validate an HTTPS URL and bind this request to one public DNS answer."""
     parsed = urlsplit(value)
@@ -76,9 +77,12 @@ async def pin_https_url(
         addresses = [ipaddress.ip_address(raw) for raw in raw_addresses]
     except ValueError as exc:
         raise RuntimeError(f"unsafe DNS response for {field}") from exc
-    if not addresses or any(
-        not address.is_global or getattr(address, "ipv4_mapped", None) is not None
-        for address in addresses
+    if not addresses or (
+        not allow_private_network
+        and any(
+            not address.is_global or getattr(address, "ipv4_mapped", None) is not None
+            for address in addresses
+        )
     ):
         raise RuntimeError(f"unsafe DNS response for {field}")
     selected = sorted(addresses, key=lambda item: (item.version, item.packed))[0]

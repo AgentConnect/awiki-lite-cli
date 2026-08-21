@@ -17,6 +17,7 @@ import httpx
 
 from awiki_lite_cli.application.registration import RegistrationWorkflow
 from awiki_lite_cli.domain.models import AuthenticatedIdentity
+from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
 from awiki_lite_cli.infrastructure.message_service import MessageService
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore
@@ -131,9 +132,15 @@ async def _register(
     *,
     tolerate_sms_failure: bool,
 ) -> None:
-    workflow = RegistrationWorkflow(UserService(client, SERVICE_URL), store, SERVICE_URL)
+    workflow = RegistrationWorkflow(
+        UserService(client, SERVICE_URL),
+        MessageService(client, SERVICE_URL),
+        store,
+        SERVICE_URL,
+        generate_identity,
+    )
     try:
-        canonical_handle, canonical_phone, domain = await workflow.begin(handle, phone)
+        canonical_handle, canonical_phone, domain, _ = await workflow.begin(handle, phone)
     except JsonRpcFailure:
         if not tolerate_sms_failure:
             raise
@@ -169,9 +176,15 @@ async def _run(repo_root: Path, values: dict[str, str]) -> None:
                 tolerate_sms_failure=True,
             )
             service_b = UserService(client, SERVICE_URL)
-            flow_b = RegistrationWorkflow(service_b, store_b, SERVICE_URL)
+            flow_b = RegistrationWorkflow(
+                service_b,
+                MessageService(client, SERVICE_URL),
+                store_b,
+                SERVICE_URL,
+                generate_identity,
+            )
             try:
-                canonical_b, canonical_phone_b, domain_b = await flow_b.begin(handle_b, phone_b)
+                canonical_b, canonical_phone_b, domain_b, _ = await flow_b.begin(handle_b, phone_b)
             except JsonRpcFailure:
                 canonical_b, canonical_phone_b, domain_b = handle_b, phone_b, "awiki.info"
             otp_b = _resolve_peer_otp(operator, phone_b, handle_b)

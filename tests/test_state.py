@@ -6,7 +6,12 @@ from threading import Barrier, Thread
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
 
-from awiki_lite_cli.domain.models import AttachmentContext, AttachmentRef, IdentityState
+from awiki_lite_cli.domain.models import (
+    AttachmentContext,
+    AttachmentRef,
+    IdentityState,
+    SyncBootstrapState,
+)
 from awiki_lite_cli.infrastructure.state import (
     IdentityExistsError,
     InvalidPassphraseError,
@@ -83,6 +88,44 @@ def test_staged_registration_can_resume_without_plaintext_keys(tmp_path: Path) -
     assert store.load_pending_identity() == identity()
     assert store.unlock_pending_keys("long passphrase value")
     assert b"BEGIN PRIVATE KEY" not in (store.secrets_dir / "root-key.pem").read_bytes()
+
+
+def test_sync_installation_reuses_opaque_id_and_persists_bootstrap(tmp_path: Path) -> None:
+    store = SecureStateStore(tmp_path / "state")
+    store.save_registration(identity(), "fixture-token", keys(), "long passphrase value")
+    first = store.initialize_sync(identity().did)
+    second = SecureStateStore(store.root).initialize_sync(identity().did)
+    assert first == second
+    assert first.client_instance_id.startswith("lite-installation-")
+    assert identity().did not in first.client_instance_id
+    assert_private_path(store.root / "sync-installation.json", directory=False)
+
+    completed = store.complete_sync_bootstrap(
+        first,
+        SyncBootstrapState("account-1", "dev", "2026-08-21T00:00:00Z", "1", "7"),
+    )
+    assert store.load_sync(identity().did) == completed
+    raw = (store.root / "sync-installation.json").read_text()
+    assert "fixture-token" not in raw
+    assert "recovery" not in raw
+
+
+def test_sync_installation_rejects_other_identity_and_invalid_cursor(tmp_path: Path) -> None:
+    store = SecureStateStore(tmp_path / "state")
+    store.initialize_sync(identity().did)
+    with pytest.raises(StateError, match="another identity"):
+        store.load_sync("did:wba:example.test:user:other")
+    data = json.loads((store.root / "sync-installation.json").read_text())
+    data["bootstrap"] = {
+        "account_id": "account-1",
+        "device_id": "dev",
+        "server_time": "now",
+        "stream_epoch": "0",
+        "scan_seq": "bad",
+    }
+    store._atomic_json(store.root / "sync-installation.json", data)
+    with pytest.raises(StateError, match="invalid"):
+        store.load_sync(identity().did)
 
 
 def test_finalize_failure_never_publishes_half_identity(tmp_path: Path, monkeypatch) -> None:

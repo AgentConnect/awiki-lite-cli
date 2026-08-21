@@ -33,8 +33,9 @@ and must not spawn Python or `uv`.
 enabling remote tests; it continues to the second suite after a failure and returns nonzero if
 either suite fails.
 
-Python and TypeScript use separate default state directories and listener installations. Do not
-point both implementations at the same `AWIKI_LITE_STATE_DIR`; shared local state is unsupported.
+Python and TypeScript use separate default state directories but share the native listener service
+name. Do not point both implementations at the same `AWIKI_LITE_STATE_DIR`; shared local state is
+unsupported. Install only one native listener and reinstall it when switching implementations.
 
 Use Node 20.11+ and pnpm 9.15.x (`packageManager` in `typescript/package.json`). `uv build` remains a Python-only wheel of `src/awiki_lite_cli`.
 
@@ -44,7 +45,7 @@ Use four-space indentation, Ruff formatting, and complete type annotations. Name
 
 ## Testing Guidelines
 
-Use pytest files named `test_*.py` and test functions named `test_*`. Add tests with every feature or bug fix. Cover CLI exit codes, invalid arguments, JSON-RPC errors, timeouts, idempotent retries, and secret redaction. Mock unit-level network calls; reserve real `awiki.info` access for explicit integration tests. Keep fixtures deterministic and credential-free.
+Use pytest files named `test_*.py` and test functions named `test_*`. Add tests with every feature or bug fix. Cover CLI exit codes, invalid arguments, JSON-RPC errors, timeouts, idempotent retries, and secret redaction. Mock unit-level network calls; reserve real service access for explicit integration tests. Keep fixtures deterministic and credential-free.
 
 `tests/fixtures/cli-command-contract.json` is the shared public CLI contract. The root Python test
 and `typescript/tests/cli.test.ts` must each validate their own real command tree against it whenever

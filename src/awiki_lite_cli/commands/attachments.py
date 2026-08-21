@@ -76,16 +76,28 @@ def _run_send(
 
     async def invoke() -> tuple[str, str]:
         async with httpx.AsyncClient(
-            timeout=20.0, trust_env=False, follow_redirects=False
+            timeout=20.0,
+            trust_env=False,
+            follow_redirects=False,
+            verify=settings.tls_context(),
         ) as client:
             identity = store.unlock(passphrase)
             resolved_recipient = (
-                await resolve_peer_did(client, recipient_did, identity.identity.handle)
+                await resolve_peer_did(
+                    client,
+                    recipient_did,
+                    identity.identity.handle,
+                    allow_private_network=settings.allow_private_network,
+                )
                 if recipient_did is not None
                 else None
             )
             workflow = AttachmentWorkflow(
-                AttachmentService(client, settings.message_service_url),
+                AttachmentService(
+                    client,
+                    settings.message_service_url,
+                    allow_private_network=settings.allow_private_network,
+                ),
                 MessageService(client, settings.message_service_url),
                 GroupService(client, settings.message_service_url),
                 store,
@@ -110,10 +122,17 @@ def _run_download(message_id: str, attachment_id: str, output: Path) -> Path:
 
     async def invoke() -> Path:
         async with httpx.AsyncClient(
-            timeout=20.0, trust_env=False, follow_redirects=False
+            timeout=20.0,
+            trust_env=False,
+            follow_redirects=False,
+            verify=settings.tls_context(),
         ) as client:
             workflow = AttachmentWorkflow(
-                AttachmentService(client, settings.message_service_url),
+                AttachmentService(
+                    client,
+                    settings.message_service_url,
+                    allow_private_network=settings.allow_private_network,
+                ),
                 MessageService(client, settings.message_service_url),
                 GroupService(client, settings.message_service_url),
                 store,

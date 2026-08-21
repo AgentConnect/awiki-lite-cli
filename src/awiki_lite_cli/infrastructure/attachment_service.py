@@ -351,10 +351,12 @@ class AttachmentService:
         base_url: str,
         service_resolver: Callable[[str], Awaitable[str]] | None = None,
         address_resolver: AddressResolver = resolve_public_addresses,
+        allow_private_network: bool = False,
     ) -> None:
         self.client = client
         self.endpoint = base_url.rstrip("/") + "/im/rpc"
         self.address_resolver = address_resolver
+        self.allow_private_network = allow_private_network
         self.service_resolver = service_resolver or self._resolve_attachment_service
 
     async def _resolve_attachment_service(self, sender_did: str) -> str:
@@ -362,6 +364,7 @@ class AttachmentService:
             sender_did,
             client=self.client,
             address_resolver=self.address_resolver,
+            allow_private_network=self.allow_private_network,
         )
 
     async def capabilities(
@@ -414,7 +417,10 @@ class AttachmentService:
         _require_unexpired(slot.expires_at)
         uri = _https_uri(slot.upload_uri, "upload_uri")
         target = await pin_https_url(
-            uri, resolver=self.address_resolver, field="attachment upload URI"
+            uri,
+            resolver=self.address_resolver,
+            field="attachment upload URI",
+            allow_private_network=self.allow_private_network,
         )
         headers = _upload_headers(slot.upload_headers)
         prepared.rewind()
@@ -527,7 +533,10 @@ class AttachmentService:
         _require_unexpired(ticket.expires_at, "attachment download ticket")
         uri = _https_uri(attachment.object_uri, "object_uri")
         target = await pin_https_url(
-            uri, resolver=self.address_resolver, field="attachment object URI"
+            uri,
+            resolver=self.address_resolver,
+            field="attachment object URI",
+            allow_private_network=self.allow_private_network,
         )
         temporary_name = f".awiki-lite-{uuid4()}.part"
         temporary_fd: int | None = None

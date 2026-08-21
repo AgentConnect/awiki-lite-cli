@@ -7,7 +7,13 @@ import { parseManifest } from "../infrastructure/attachment-manifest.js";
 import { GroupService } from "../infrastructure/group-service.js";
 import { resolvePeerDid } from "../infrastructure/peer-resolver.js";
 import { terminalText } from "../presentation.js";
-import { createRuntime, promptPassphrase, wrapMain } from "./runtime.js";
+import {
+  createRuntime,
+  promptPassphrase,
+  promptText,
+  requireInteger,
+  wrapMain,
+} from "./runtime.js";
 
 export function registerGroupCommand(root: Command): void {
   const group = root
@@ -41,6 +47,7 @@ export function registerGroupCommand(root: Command): void {
     .addOption(new Option("--cursor <cursor>").hideHelp())
     .action((options: { limit: number; cursor?: string }) => {
       wrapMain("group", async () => {
+        requireInteger(options.limit, "limit", 1, 100);
         const { settings, store, http } = createRuntime();
         try {
           const workflow = new GroupWorkflow(
@@ -87,6 +94,7 @@ export function registerGroupCommand(root: Command): void {
     .addOption(new Option("--cursor <cursor>").hideHelp())
     .action((options: { group: string; limit: number; cursor?: string }) => {
       wrapMain("group", async () => {
+        requireInteger(options.limit, "limit", 1, 100);
         const { settings, store, http } = createRuntime();
         try {
           const workflow = new GroupWorkflow(
@@ -121,6 +129,7 @@ export function registerGroupCommand(root: Command): void {
             http.client,
             options.member,
             store.loadPublic().handle,
+            { allowPrivateNetwork: settings.allowPrivateNetwork },
           );
           const passphrase = await promptPassphrase();
           const workflow = new GroupWorkflow(
@@ -147,6 +156,10 @@ export function registerGroupCommand(root: Command): void {
     )
     .action((options: { group: string; limit: number; sinceSeq?: number }) => {
       wrapMain("group", async () => {
+        requireInteger(options.limit, "limit", 1, 100);
+        if (options.sinceSeq !== undefined) {
+          requireInteger(options.sinceSeq, "since-seq", 0);
+        }
         const { settings, store, http } = createRuntime();
         try {
           const workflow = new GroupWorkflow(
@@ -203,10 +216,9 @@ export async function sendGroupMessage(
   if (stdin && text !== undefined) {
     throw new InvalidInputError("--text and --stdin are mutually exclusive");
   }
-  const textValue = stdin ? readFileSync(0, "utf8") : text;
-  if (!textValue) {
-    throw new InvalidInputError("message text must not be empty");
-  }
+  const textValue = stdin
+    ? readFileSync(0, "utf8")
+    : (text ?? (await promptText("Message")));
   const passphrase = await promptPassphrase();
   const { settings, store, http } = createRuntime();
   try {

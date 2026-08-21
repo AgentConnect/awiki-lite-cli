@@ -80,11 +80,17 @@ def add(
     member_did: Annotated[str, typer.Option("--member", help="Member DID or handle.")],
 ) -> None:
     """Add one DID or handle as a member."""
+    settings = Settings.from_env()
 
     async def action(
         workflow: GroupWorkflow, store: SecureStateStore, client: httpx.AsyncClient
     ) -> str:
-        member = await resolve_peer_did(client, member_did, store.load_public().handle)
+        member = await resolve_peer_did(
+            client,
+            member_did,
+            store.load_public().handle,
+            allow_private_network=settings.allow_private_network,
+        )
         passphrase = typer.prompt("Local key passphrase", hide_input=True)
         return await workflow.add(store.unlock(passphrase), group_did, member)
 
@@ -138,7 +144,10 @@ def _run(
 
     async def invoke() -> T:
         async with httpx.AsyncClient(
-            timeout=20.0, trust_env=False, follow_redirects=False
+            timeout=20.0,
+            trust_env=False,
+            follow_redirects=False,
+            verify=settings.tls_context(),
         ) as client:
             workflow = GroupWorkflow(
                 GroupService(client, settings.message_service_url), store, parse_manifest

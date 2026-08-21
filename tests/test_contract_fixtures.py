@@ -19,6 +19,14 @@ def test_direct_fixture_is_plain_text_only() -> None:
     assert send["meta"]["security_profile"] == "transport-protected"
     assert send["meta"]["content_type"] == "text/plain"
     assert "e2ee" not in json.dumps(send).lower()
+    assert fixture["inbox"] == {
+        "method": "inbox.get",
+        "profile": "anp.inbox.local.v1",
+    }
+    assert fixture["history"] == {
+        "method": "direct.get_history",
+        "profile": "anp.direct.local.v1",
+    }
 
 
 def test_group_fixture_freezes_plain_group_base_only() -> None:

@@ -1,5 +1,3 @@
-import { basename } from "node:path";
-
 import password from "@inquirer/password";
 
 import {
@@ -8,7 +6,7 @@ import {
   SessionExpiredError,
   StateError,
 } from "../application/errors.js";
-import { settingsFromEnv } from "../config.js";
+import { requireReadableCaBundle, settingsFromEnv } from "../config.js";
 import { createHttpClient } from "../infrastructure/rpc.js";
 import { SecureStateStore } from "../infrastructure/state.js";
 
@@ -29,6 +27,36 @@ export async function promptPassphrase(
   return first;
 }
 
+export async function promptText(message: string): Promise<string> {
+  const { createInterface } = await import("node:readline/promises");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await rl.question(`${message}: `);
+  } finally {
+    rl.close();
+  }
+}
+
+export function requireInteger(
+  value: number,
+  field: string,
+  minimum: number,
+  maximum?: number,
+): number {
+  if (
+    !Number.isInteger(value) ||
+    value < minimum ||
+    (maximum !== undefined && value > maximum)
+  ) {
+    const range =
+      maximum === undefined
+        ? `at least ${minimum}`
+        : `between ${minimum} and ${maximum}`;
+    throw new InvalidInputError(`${field} must be an integer ${range}`);
+  }
+  return value;
+}
+
 export function createRuntime(
   overrides: {
     stateDir?: string;
@@ -42,7 +70,7 @@ export function createRuntime(
     overrides.messageServiceUrl ?? settings.messageServiceUrl;
   const store = new SecureStateStore(stateDir);
   const http = createHttpClient({
-    caBundle: settings.caBundle,
+    caBundle: requireReadableCaBundle(settings.caBundle),
     timeoutMs: 20_000,
   });
   return {
@@ -62,7 +90,7 @@ export function mapError(
     | "attachment"
     | "listener",
 ): never {
-  const argv0 = basename(process.argv[1] ?? "awiki-lite-ts");
+  const argv0 = "awiki-lite-ts";
   if (error instanceof InvalidInputError) {
     console.error(`Invalid input: ${error.message}`);
     process.exit(2);

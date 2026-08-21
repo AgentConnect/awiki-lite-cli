@@ -393,22 +393,7 @@ describe("group messages and dm attachment contexts", () => {
       session: store.loadSession(),
     };
     const client = jsonRpcClient((method) => {
-      if (method === "sync.delta") {
-        return {
-          events: [
-            {
-              payload: {
-                thread: {
-                  kind: "direct",
-                  peer_did: "did:wba:example.com:user:bob:e1_bob",
-                },
-              },
-            },
-          ],
-          has_more: false,
-        };
-      }
-      expect(method).toBe("sync.thread_after");
+      expect(method).toBe("inbox.get");
       return {
         messages: [
           {
@@ -419,16 +404,7 @@ describe("group messages and dm attachment contexts", () => {
             content_type: "application/anp-attachment-manifest+json",
             content: manifest(),
           },
-          {
-            id: "m-outbound",
-            sender_did: identity.identity.did,
-            receiver_did: "did:wba:example.com:user:bob:e1_bob",
-            sent_at: "2026-01-04T00:00:00Z",
-            content_type: "text/plain",
-            content: "sent by me",
-          },
         ],
-        next_after_server_seq: "1",
         has_more: false,
       };
     });
@@ -445,12 +421,11 @@ describe("group messages and dm attachment contexts", () => {
     expect(saved.groupDid).toBeNull();
   });
 
-  test("dm history follows sync cursors and applies skip", async () => {
+  test("dm history delegates bounded pagination to the service", async () => {
     const identity = {
       identity: unlockedFixture().identity,
       session: { accessToken: "fixture-token" },
     };
-    const cursors: string[] = [];
     const message = (messageId: string, sequence: number) => ({
       id: messageId,
       server_seq: String(sequence),
@@ -461,27 +436,16 @@ describe("group messages and dm attachment contexts", () => {
       sent_at: `2026-08-20T00:00:0${sequence}Z`,
     });
     const client = jsonRpcClient((method, params) => {
-      expect(method).toBe("sync.thread_after");
+      expect(method).toBe("direct.get_history");
       const body = params.body as Record<string, unknown>;
-      const cursor = String(body.after_server_seq);
-      cursors.push(cursor);
-      return cursor === "0"
-        ? {
-            messages: [message("m1", 1), message("m2", 2)],
-            next_after_server_seq: "2",
-            has_more: true,
-          }
-        : {
-            messages: [message("m3", 3)],
-            next_after_server_seq: "3",
-            has_more: false,
-          };
+      expect(body.limit).toBe(1);
+      expect(body.skip).toBe(1);
+      return { messages: [message("m2", 2)], has_more: true };
     });
     const [messages, hasMore] = await new MessageService(
       client,
       "https://example.com",
     ).history(identity, MEMBER_DID, 1, 1);
-    expect(cursors).toEqual(["0", "2"]);
     expect(messages.map((item) => item.messageId)).toEqual(["m2"]);
     expect(hasMore).toBe(true);
   });

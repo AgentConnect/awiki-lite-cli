@@ -81,21 +81,7 @@ async def test_inbox_filters_non_plain_and_mark_read_is_explicit() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         methods.append(body["method"])
-        if body["method"] == "sync.delta":
-            result = {
-                "events": [
-                    {
-                        "payload": {
-                            "thread": {
-                                "kind": "direct",
-                                "peer_did": "did:wba:example.test:user:bob",
-                            }
-                        }
-                    }
-                ],
-                "has_more": False,
-            }
-        elif body["method"] == "sync.thread_after":
+        if body["method"] == "inbox.get":
             result = {
                 "messages": [
                     {
@@ -113,17 +99,8 @@ async def test_inbox_filters_non_plain_and_mark_read_is_explicit() -> None:
                         "content_type": "application/anp-direct-cipher+json",
                         "type": "json",
                     },
-                    {
-                        "id": "outbound",
-                        "sender_did": identity.identity.did,
-                        "receiver_did": "did:wba:example.test:user:bob",
-                        "content": "sent by me",
-                        "content_type": "text/plain",
-                        "sent_at": "later",
-                    },
                 ],
                 "has_more": False,
-                "next_after_server_seq": "2",
             }
         else:
             result = {"updated_count": 1}
@@ -132,16 +109,16 @@ async def test_inbox_filters_non_plain_and_mark_read_is_explicit() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         service = MessageService(client, "https://example.test")
         messages, _ = await service.inbox(identity, 20)
-        assert methods == ["sync.delta", "sync.thread_after"]
+        assert methods == ["inbox.get"]
         assert [message.message_id for message in messages] == ["m1"]
         assert await service.mark_read(identity, ["m1"]) == 1
-    assert methods == ["sync.delta", "sync.thread_after", "inbox.mark_read"]
+    assert methods == ["inbox.get", "inbox.mark_read"]
 
 
 @pytest.mark.asyncio
-async def test_history_pages_with_sync_cursor_and_applies_skip() -> None:
+async def test_history_delegates_bounded_pagination_to_service() -> None:
     _, identity = contexts()
-    cursors: list[str] = []
+    pages: list[tuple[int, int]] = []
 
     def message(message_id: str, sequence: int) -> dict[str, object]:
         return {
@@ -156,29 +133,17 @@ async def test_history_pages_with_sync_cursor_and_applies_skip() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        assert body["method"] == "sync.thread_after"
-        cursor = body["params"]["body"]["after_server_seq"]
-        cursors.append(cursor)
-        result = (
-            {
-                "messages": [message("m1", 1), message("m2", 2)],
-                "next_after_server_seq": "2",
-                "has_more": True,
-            }
-            if cursor == "0"
-            else {
-                "messages": [message("m3", 3)],
-                "next_after_server_seq": "3",
-                "has_more": False,
-            }
-        )
+        assert body["method"] == "direct.get_history"
+        page = body["params"]["body"]
+        pages.append((page["limit"], page["skip"]))
+        result = {"messages": [message("m2", 2)], "has_more": True}
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         messages, has_more = await MessageService(client, "https://example.test").history(
             identity, "did:wba:example.test:user:bob", limit=1, skip=1
         )
-    assert cursors == ["0", "2"]
+    assert pages == [(1, 1)]
     assert [item.message_id for item in messages] == ["m2"]
     assert has_more is True
 

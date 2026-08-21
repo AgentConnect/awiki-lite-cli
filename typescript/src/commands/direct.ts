@@ -14,7 +14,13 @@ import {
   type SecureStateStore,
 } from "../infrastructure/state.js";
 import { terminalText } from "../presentation.js";
-import { createRuntime, promptPassphrase, wrapMain } from "./runtime.js";
+import {
+  createRuntime,
+  promptPassphrase,
+  promptText,
+  requireInteger,
+  wrapMain,
+} from "./runtime.js";
 
 export async function sendDirectMessage(
   peer: string,
@@ -24,16 +30,16 @@ export async function sendDirectMessage(
   if (stdin && text !== undefined) {
     throw new InvalidInputError("--text and --stdin are mutually exclusive");
   }
-  const textValue = stdin ? readFileSync(0, "utf8") : text;
-  if (textValue === undefined) {
-    throw new InvalidInputError("message text must not be empty");
-  }
+  const textValue = stdin
+    ? readFileSync(0, "utf8")
+    : (text ?? (await promptText("Message")));
   const { settings, store, http } = createRuntime();
   try {
     const did = await resolvePeerDid(
       http.client,
       peer,
       store.loadPublic().handle,
+      { allowPrivateNetwork: settings.allowPrivateNetwork },
     );
     const passphrase = await promptPassphrase();
     const identity = store.unlock(passphrase);
@@ -77,6 +83,8 @@ export function registerDirectReadCommands(root: Command): void {
     .option("--mark-read", "Mark displayed messages read.")
     .action((options: { limit: number; skip: number; markRead?: boolean }) => {
       wrapMain("messaging", async () => {
+        requireInteger(options.limit, "limit", 1, 100);
+        requireInteger(options.skip, "skip", 0);
         const { settings, store, http } = createRuntime();
         try {
           const identity: AuthenticatedIdentity = {
@@ -87,7 +95,9 @@ export function registerDirectReadCommands(root: Command): void {
             http.client,
             settings.messageServiceUrl,
           );
-          const [messages, hasMore] = await service.inbox(
+          const [messages, hasMore] = await inboxWithSync(
+            service,
+            store,
             identity,
             options.limit,
             options.skip,
@@ -123,6 +133,8 @@ export function registerDirectReadCommands(root: Command): void {
     )
     .action((options: { with: string; limit: number; skip: number }) => {
       wrapMain("messaging", async () => {
+        requireInteger(options.limit, "limit", 1, 100);
+        requireInteger(options.skip, "skip", 0);
         const { settings, store, http } = createRuntime();
         try {
           const identity: AuthenticatedIdentity = {
@@ -137,8 +149,11 @@ export function registerDirectReadCommands(root: Command): void {
             http.client,
             options.with,
             identity.identity.handle,
+            { allowPrivateNetwork: settings.allowPrivateNetwork },
           );
-          const [messages, hasMore] = await service.history(
+          const [messages, hasMore] = await historyWithSync(
+            service,
+            store,
             identity,
             peer,
             options.limit,
@@ -177,6 +192,81 @@ export function saveAttachmentContextsFromMessages(
     }
   }
   store.saveAttachmentContexts(contexts);
+}
+
+async function bootstrapTrackedInstallation(
+  service: MessageService,
+  store: SecureStateStore,
+  identity: AuthenticatedIdentity,
+): Promise<void> {
+  const installation = store.loadSync(identity.identity.did);
+  if (installation === null || installation.bootstrap !== null) {
+    return;
+  }
+  const bootstrap = await service.bootstrapSync(
+    identity,
+    installation.clientInstanceId,
+  );
+  store.completeSyncBootstrap(installation, bootstrap);
+}
+
+export async function inboxWithSync(
+  service: MessageService,
+  store: SecureStateStore,
+  identity: AuthenticatedIdentity,
+  limit: number,
+  skip: number,
+): Promise<[ChatMessage[], boolean]> {
+  await bootstrapTrackedInstallation(service, store, identity);
+  const page = await service.inbox(identity, limit, skip);
+  if (
+    skip === 0 &&
+    page[0].length === 0 &&
+    !page[1] &&
+    store.loadSync(identity.identity.did) === null
+  ) {
+    await bootstrapLegacyInstallation(service, store, identity);
+    return service.inbox(identity, limit, skip);
+  }
+  return page;
+}
+
+export async function historyWithSync(
+  service: MessageService,
+  store: SecureStateStore,
+  identity: AuthenticatedIdentity,
+  peer: string,
+  limit: number,
+  skip: number,
+): Promise<[ChatMessage[], boolean]> {
+  await bootstrapTrackedInstallation(service, store, identity);
+  const page = await service.history(identity, peer, limit, skip);
+  if (
+    skip === 0 &&
+    page[0].length === 0 &&
+    !page[1] &&
+    store.loadSync(identity.identity.did) === null
+  ) {
+    await bootstrapLegacyInstallation(service, store, identity);
+    return service.history(identity, peer, limit, skip);
+  }
+  return page;
+}
+
+async function bootstrapLegacyInstallation(
+  service: MessageService,
+  store: SecureStateStore,
+  identity: AuthenticatedIdentity,
+): Promise<void> {
+  const installation = store.initializeSync(identity.identity.did);
+  if (installation.bootstrap !== null) {
+    return;
+  }
+  const bootstrap = await service.bootstrapSync(
+    identity,
+    installation.clientInstanceId,
+  );
+  store.completeSyncBootstrap(installation, bootstrap);
 }
 
 export function renderDirectMessages(messages: ChatMessage[]): string[] {

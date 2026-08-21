@@ -35,3 +35,18 @@ async def test_dns_pin_connects_to_checked_ip_but_preserves_tls_authority() -> N
     assert target.url == "https://93.184.216.34:8443/a"
     assert target.host_header == "objects.example:8443"
     assert target.extensions == {"sni_hostname": "objects.example"}
+
+
+@pytest.mark.asyncio
+async def test_private_network_requires_explicit_opt_in() -> None:
+    async def private(_hostname: str, _port: int) -> list[str]:
+        return ["10.0.0.8"]
+
+    with pytest.raises(RuntimeError, match="unsafe DNS"):
+        await pin_https_url("https://objects.internal/file", resolver=private)
+    target = await pin_https_url(
+        "https://objects.internal/file",
+        resolver=private,
+        allow_private_network=True,
+    )
+    assert target.url == "https://10.0.0.8/file"

@@ -29,6 +29,7 @@ export interface ServiceContext {
   readonly home: string;
   readonly uid: number | null;
   readonly platform: string;
+  readonly caBundle: string | null;
 }
 
 export interface ListenerServiceStatus {
@@ -90,7 +91,12 @@ export function currentServiceContext(
   stateDir: string,
   messageServiceUrl: string,
   argv = process.argv,
-  options: { home?: string; platform?: string; uid?: number | null } = {},
+  options: {
+    home?: string;
+    platform?: string;
+    uid?: number | null;
+    caBundle?: string | null;
+  } = {},
 ): ServiceContext {
   const script = argv[1]
     ? realpathSync(argv[1])
@@ -105,11 +111,12 @@ export function currentServiceContext(
       options.uid ??
       (typeof process.getuid === "function" ? process.getuid() : null),
     platform: options.platform ?? process.platform,
+    caBundle: options.caBundle ?? null,
   };
 }
 
 export function serviceCommand(context: ServiceContext): string[] {
-  return [
+  const command = [
     context.execPath,
     context.scriptPath,
     "runtime",
@@ -121,6 +128,10 @@ export function serviceCommand(context: ServiceContext): string[] {
     "--message-service-url",
     context.messageServiceUrl,
   ];
+  if (context.caBundle) {
+    command.push("--ca-bundle", context.caBundle);
+  }
+  return command;
 }
 
 export function unitContents(context: ServiceContext): string {
@@ -435,11 +446,22 @@ export class WindowsTaskManager extends ListenerServiceManager {
         state: "not-installed",
       };
     }
+    const stateResult = this.runner.run(
+      [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "(Get-ScheduledTask -TaskName 'AWikiLiteListener' -TaskPath '\\AgentConnect\\').State.ToString()",
+      ],
+      { check: false },
+    );
+    const state = stateResult.stdout.trim().toLowerCase() || "unknown";
     return {
       platform: this.platform,
       installed: true,
-      running: /running/i.test(result.stdout),
-      state: "installed",
+      running: state === "running",
+      state,
     };
   }
 
@@ -455,7 +477,7 @@ export class WindowsTaskManager extends ListenerServiceManager {
       "/TN",
       this.taskName,
       "/TR",
-      serviceCommand(this.context).join(" "),
+      windowsCommandLine(serviceCommand(this.context)),
       "/SC",
       "ONLOGON",
       "/RL",
@@ -494,6 +516,32 @@ export class WindowsTaskManager extends ListenerServiceManager {
       state: "not-installed",
     };
   }
+}
+
+export function windowsCommandLine(values: string[]): string {
+  return values.map(windowsQuote).join(" ");
+}
+
+function windowsQuote(value: string): string {
+  if (value && !/[\s"]/.test(value)) {
+    return value;
+  }
+  let output = '"';
+  let backslashes = 0;
+  for (const character of value) {
+    if (character === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (character === '"') {
+      output += "\\".repeat(backslashes * 2 + 1) + '"';
+      backslashes = 0;
+      continue;
+    }
+    output += "\\".repeat(backslashes) + character;
+    backslashes = 0;
+  }
+  return output + "\\".repeat(backslashes * 2) + '"';
 }
 
 export function serviceManager(

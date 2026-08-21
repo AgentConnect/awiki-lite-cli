@@ -44,6 +44,7 @@ async def resolve_peer_did(
     owner_handle: str,
     *,
     address_resolver: AddressResolver = resolve_public_addresses,
+    allow_private_network: bool = False,
 ) -> str:
     peer, is_did = normalize_peer_reference(value, owner_handle)
     if is_did:
@@ -55,6 +56,7 @@ async def resolve_peer_did(
         build_resolution_url(local_part, domain),
         "handle resolution URL",
         address_resolver,
+        allow_private_network,
     )
     if resolution.get("handle") != peer or resolution.get("status") != "active":
         raise RuntimeError("handle resolution returned an inactive or mismatched handle")
@@ -73,6 +75,7 @@ async def resolve_peer_did(
         build_did_resolution_url(did),
         "peer DID URL",
         address_resolver,
+        allow_private_network,
     )
     try:
         verify_resolved_document(did, document)
@@ -86,9 +89,15 @@ async def _get_public_json(
     url: str,
     field: str,
     address_resolver: AddressResolver,
+    allow_private_network: bool,
 ) -> dict[str, Any]:
     try:
-        target = await pin_https_url(url, resolver=address_resolver, field=field)
+        target = await pin_https_url(
+            url,
+            resolver=address_resolver,
+            field=field,
+            allow_private_network=allow_private_network,
+        )
         response = await client.get(
             target.url,
             headers=pinned_headers(target, {"Accept": "application/json"}),

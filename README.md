@@ -25,13 +25,15 @@ supported CLI commands and options are aligned. 只需选择一个版本，不�
 | TypeScript | `typescript/` | Node.js 20.11+ and pnpm 9.15.x | `pnpm exec awiki-lite-ts` |
 
 The two implementations do not call each other and do not share local identity files. Each uses
-its own state directory and listener installation. Switching languages does not move an existing
+its own state directory, but the native listener service name is shared. Switching languages does not move an existing
 identity; register and manage each implementation separately. Do not point both implementations at
-the same `AWIKI_LITE_STATE_DIR`.
+the same `AWIKI_LITE_STATE_DIR`. Only install one native listener at a time; uninstall and reinstall
+it when switching the listener implementation.
 
-两个版本不会互相调用，也不会共享本地身份文件。它们各自使用独立的状态目录和 listener
-安装。切换语言不会自动迁移已有身份，需要分别注册和管理；不要把两版的
-`AWIKI_LITE_STATE_DIR` 指向同一个目录。
+两个版本不会互相调用，也不会共享本地身份文件。它们各自使用独立的状态目录，但系统
+listener 使用同一个服务名，不能同时安装两份。切换语言不会自动迁移已有身份，需要分别注册
+和管理；不要把两版的 `AWIKI_LITE_STATE_DIR` 指向同一个目录。切换 listener 语言时，先卸载
+旧版，再用新版重新安装。
 
 ## Quick Start / 快速开始
 
@@ -91,6 +93,20 @@ self-hosted Open Server; TLS verification remains enabled.
 For an explicitly trusted local/private attachment data plane, also set
 `AWIKI_LITE_ALLOW_PRIVATE_NETWORK=1`. This weakens the default SSRF boundary and must not be used
 for untrusted service endpoints.
+
+Registration also performs the Message Service's one-time Sync V2 device initialization. There is
+no extra command to run: Lite stores a random installation ID locally and reuses it only when an
+interrupted initialization must be retried. An identity created by an older Lite version is
+initialized automatically if its first inbox/history query returns an empty page. The server's
+`tail_only` rule means messages from before that device initialization are not copied into the new
+device's history. Accounts that require full historical recovery must use the full AWiki CLI;
+Lite does not download or maintain a local message database.
+
+注册时还会自动完成 Message Service 所需的一次性 Sync V2 设备初始化，不需要用户再执行额外
+命令。Lite 只在本地保存一个随机安装 ID；如果初始化中断，重试会继续使用同一个 ID。旧版 Lite
+创建的身份如果第一次读取收件箱/历史得到空页，也会自动补做设备登记。服务器的 `tail_only`
+规则决定了登记之前的消息不会倒灌到这个新设备。需要恢复完整旧历史的账号应使用完整版 AWiki
+CLI；Lite 不下载或维护本地消息数据库。
 
 ## Common Commands / 常用命令
 

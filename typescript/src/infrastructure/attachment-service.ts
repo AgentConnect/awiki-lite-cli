@@ -1,28 +1,33 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
   existsSync,
   fstatSync,
   fsyncSync,
+  linkSync,
   lstatSync,
   openSync,
   readSync,
-  renameSync,
   unlinkSync,
   writeSync,
-} from 'node:fs';
-import { basename, dirname, join } from 'node:path';
-import { Readable } from 'node:stream';
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { Readable } from "node:stream";
 
-import type { AttachmentContext, AttachmentRef, AuthenticatedIdentity, UnlockedIdentity } from '../domain/models.js';
-import { ATTACHMENT_PROFILE } from './anp-sdk.js';
-import { pinHttpsUrl } from './safe-network.js';
-import { buildCapabilities, validateDid } from './message-service.js';
-import { callJsonRpc, type HttpClient } from './rpc.js';
+import type {
+  AttachmentContext,
+  AttachmentRef,
+  AuthenticatedIdentity,
+  UnlockedIdentity,
+} from "../domain/models.js";
+import { ATTACHMENT_PROFILE } from "./anp-sdk.js";
+import { pinHttpsUrl, pinnedHeaders } from "./safe-network.js";
+import { buildCapabilities, validateDid } from "./message-service.js";
+import { callJsonRpc, type HttpClient } from "./rpc.js";
 
 export const CHUNK_SIZE = 64 * 1024;
-export const UPLOAD_HEADER_ALLOWLIST = new Set(['x-anp-upload-token']);
+export const UPLOAD_HEADER_ALLOWLIST = new Set(["x-anp-upload-token"]);
 
 export interface AttachmentCapabilities {
   readonly serviceDid: string;
@@ -52,36 +57,42 @@ export interface PreparedFile {
 
 export function prepareFile(path: string, maxBytes: number): PreparedFile {
   if (maxBytes < 0) {
-    throw new Error('attachment size limit is invalid');
+    throw new Error("attachment size limit is invalid");
   }
   const before = lstatSync(path);
   if (!before.isFile()) {
-    throw new Error('attachment path must be a regular file, not a symlink or special file');
+    throw new Error(
+      "attachment path must be a regular file, not a symlink or special file",
+    );
   }
   const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
   const fd = openSync(path, flags);
   try {
     const opened = fstatSync(fd);
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
-      throw new Error('attachment file changed while it was opened');
+    if (
+      !opened.isFile() ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino
+    ) {
+      throw new Error("attachment file changed while it was opened");
     }
     if (opened.size > maxBytes) {
-      throw new Error('attachment exceeds the service object-size limit');
+      throw new Error("attachment exceeds the service object-size limit");
     }
-    const digest = createHash('sha256');
+    const digest = createHash("sha256");
     let total = 0;
     const buffer = Buffer.alloc(CHUNK_SIZE);
     let read = readSync(fd, buffer, 0, CHUNK_SIZE, null);
     while (read > 0) {
       total += read;
       if (total > maxBytes) {
-        throw new Error('attachment exceeds the service object-size limit');
+        throw new Error("attachment exceeds the service object-size limit");
       }
       digest.update(buffer.subarray(0, read));
       read = readSync(fd, buffer, 0, CHUNK_SIZE, null);
     }
     const filename = basename(path);
-    const sha256B64u = digest.digest('base64url');
+    const sha256B64u = digest.digest("base64url");
     let offset = 0;
     return {
       fd,
@@ -104,7 +115,7 @@ export function prepareFile(path: string, maxBytes: number): PreparedFile {
       assertUnchanged() {
         const now = fstatSync(fd);
         if (now.size !== opened.size || now.mtimeMs !== opened.mtimeMs) {
-          throw new Error('attachment file changed during processing');
+          throw new Error("attachment file changed during processing");
         }
       },
     };
@@ -120,23 +131,37 @@ export class AttachmentService {
   constructor(
     private readonly client: HttpClient,
     baseUrl: string,
+    private readonly allowPrivateNetwork = false,
   ) {
-    this.endpoint = `${baseUrl.replace(/\/+$/, '')}/im/rpc`;
+    this.endpoint = `${baseUrl.replace(/\/+$/, "")}/im/rpc`;
   }
 
-  async capabilities(identity: AuthenticatedIdentity | UnlockedIdentity): Promise<AttachmentCapabilities> {
+  async capabilities(
+    identity: AuthenticatedIdentity | UnlockedIdentity,
+  ): Promise<AttachmentCapabilities> {
     const result = asObject(
-      await callJsonRpc(this.client, this.endpoint, 'anp.get_capabilities', buildCapabilities(identity.identity.did), {
-        accessToken: identity.session.accessToken,
-      }),
+      await callJsonRpc(
+        this.client,
+        this.endpoint,
+        "anp.get_capabilities",
+        buildCapabilities(identity.identity.did),
+        {
+          accessToken: identity.session.accessToken,
+        },
+      ),
     );
     const advertised = result.supported_profiles;
-    if (!Array.isArray(advertised) || !advertised.includes(ATTACHMENT_PROFILE)) {
-      throw new Error(`message service does not advertise required ${ATTACHMENT_PROFILE}`);
+    if (
+      !Array.isArray(advertised) ||
+      !advertised.includes(ATTACHMENT_PROFILE)
+    ) {
+      throw new Error(
+        `message service does not advertise required ${ATTACHMENT_PROFILE}`,
+      );
     }
     const limits = asObject(result.limits ?? {});
     return {
-      serviceDid: validateDid(String(result.service_did ?? '')),
+      serviceDid: validateDid(String(result.service_did ?? "")),
       maxObjectBytes: Number(limits.max_object_bytes ?? 1073741824),
     };
   }
@@ -155,18 +180,26 @@ export class AttachmentService {
       await callJsonRpc(
         this.client,
         this.endpoint,
-        'attachment.create_slot',
+        "attachment.create_slot",
         {
-          meta: controlMeta(identity.identity.did, serviceDid, operationId, createdAt),
+          meta: controlMeta(
+            identity.identity.did,
+            serviceDid,
+            operationId,
+            createdAt,
+          ),
           body: {
             attachment_id: attachmentId,
             expected_size: String(prepared.size),
-            expected_digest: { alg: 'sha-256', value_b64u: prepared.sha256B64u },
+            expected_digest: {
+              alg: "sha-256",
+              value_b64u: prepared.sha256B64u,
+            },
             mime_type: prepared.mimeType,
             filename: prepared.filename,
-            intended_message_security_profile: 'transport-protected',
+            intended_message_security_profile: "transport-protected",
             intended_target: { kind: targetKind, did: validateDid(targetDid) },
-            object_encryption_mode: 'none',
+            object_encryption_mode: "none",
           },
         },
         { accessToken: identity.session.accessToken },
@@ -178,25 +211,34 @@ export class AttachmentService {
       slotId: String(result.slot_id),
       uploadUri: String(result.upload_uri),
       uploadHeaders: headers,
-      objectUri: String(result.object_uri ?? ''),
-      commitToken: String(result.commit_token ?? ''),
+      objectUri: String(result.object_uri ?? ""),
+      commitToken: String(result.commit_token ?? ""),
     };
   }
 
   async upload(slot: AttachmentSlot, prepared: PreparedFile): Promise<void> {
     prepared.assertUnchanged();
-    await pinHttpsUrl(slot.uploadUri, { field: 'attachment upload URI' });
+    const target = await pinHttpsUrl(slot.uploadUri, {
+      field: "attachment upload URI",
+      allowPrivateNetwork: this.allowPrivateNetwork,
+    });
     prepared.rewind();
     const stream = readableFromPrepared(prepared);
-    const response = await this.client.put(slot.uploadUri, {
-      headers: { ...slot.uploadHeaders, 'Content-Type': prepared.mimeType },
+    const response = await this.client.put(target.url, {
+      headers: pinnedHeaders(target, {
+        ...slot.uploadHeaders,
+        "Content-Type": prepared.mimeType,
+      }),
       body: stream,
+      pinnedAddress: target.address,
+      pinnedFamily: target.family,
+      serverHostname: target.serverHostname,
     });
     if (!response.ok) {
       throw new Error(`attachment upload failed with HTTP ${response.status}`);
     }
     if (stream.bytesRead !== prepared.size) {
-      throw new Error('attachment file changed during processing');
+      throw new Error("attachment file changed during processing");
     }
     prepared.assertUnchanged();
   }
@@ -213,16 +255,21 @@ export class AttachmentService {
       await callJsonRpc(
         this.client,
         this.endpoint,
-        'attachment.commit_object',
+        "attachment.commit_object",
         {
-          meta: controlMeta(identity.identity.did, serviceDid, operationId, createdAt),
+          meta: controlMeta(
+            identity.identity.did,
+            serviceDid,
+            operationId,
+            createdAt,
+          ),
           body: {
             attachment_id: slot.attachmentId,
             slot_id: slot.slotId,
             commit_token: slot.commitToken,
             size: String(prepared.size),
-            digest: { alg: 'sha-256', value_b64u: prepared.sha256B64u },
-            object_encryption_mode: 'none',
+            digest: { alg: "sha-256", value_b64u: prepared.sha256B64u },
+            object_encryption_mode: "none",
           },
         },
         { accessToken: identity.session.accessToken },
@@ -252,9 +299,14 @@ export class AttachmentService {
       await callJsonRpc(
         this.client,
         this.endpoint,
-        'attachment.abort_object',
+        "attachment.abort_object",
         {
-          meta: controlMeta(identity.identity.did, serviceDid, operationId, createdAt),
+          meta: controlMeta(
+            identity.identity.did,
+            serviceDid,
+            operationId,
+            createdAt,
+          ),
           body: { attachment_id: slot.attachmentId, slot_id: slot.slotId },
         },
         { accessToken: identity.session.accessToken },
@@ -264,14 +316,20 @@ export class AttachmentService {
     }
   }
 
-  async getDownloadTicket(identity: AuthenticatedIdentity, context: AttachmentContext): Promise<{ value: string }> {
-    await pinHttpsUrl(context.attachment.objectUri, { field: 'attachment object URI' });
+  async getDownloadTicket(
+    identity: AuthenticatedIdentity,
+    context: AttachmentContext,
+  ): Promise<{ value: string }> {
+    await pinHttpsUrl(context.attachment.objectUri, {
+      field: "attachment object URI",
+      allowPrivateNetwork: this.allowPrivateNetwork,
+    });
     const capabilities = await this.capabilities(identity);
     const result = asObject(
       await callJsonRpc(
         this.client,
         this.endpoint,
-        'attachment.get_download_ticket',
+        "attachment.get_download_ticket",
         {
           meta: controlMeta(
             identity.identity.did,
@@ -283,7 +341,7 @@ export class AttachmentService {
             attachment_id: context.attachment.attachmentId,
             object_uri: context.attachment.objectUri,
             requester_did: identity.identity.did,
-            message_security_profile: 'transport-protected',
+            message_security_profile: "transport-protected",
             message_id: context.messageId,
             one_time: true,
             ...(context.messageTargetDid
@@ -294,7 +352,7 @@ export class AttachmentService {
         { accessToken: identity.session.accessToken },
       ),
     );
-    return { value: String(result.download_ticket_b64u ?? '') };
+    return { value: String(result.download_ticket_b64u ?? "") };
   }
 
   async download(
@@ -303,22 +361,40 @@ export class AttachmentService {
     destination: string,
   ): Promise<string> {
     if (existsSync(destination)) {
-      throw new Error('download destination already exists');
+      throw new Error("download destination already exists");
     }
-    await pinHttpsUrl(attachment.objectUri, { field: 'attachment object URI' });
-    const response = await this.client.getStream(attachment.objectUri, {
-      headers: { Authorization: `Bearer ${ticket.value}`, 'Accept-Encoding': 'identity' },
+    const target = await pinHttpsUrl(attachment.objectUri, {
+      field: "attachment object URI",
+      allowPrivateNetwork: this.allowPrivateNetwork,
+    });
+    const response = await this.client.getStream(target.url, {
+      headers: pinnedHeaders(target, {
+        Authorization: `Bearer ${ticket.value}`,
+        "Accept-Encoding": "identity",
+      }),
+      pinnedAddress: target.address,
+      pinnedFamily: target.family,
+      serverHostname: target.serverHostname,
     });
     if (!response.ok) {
-      throw new Error(`attachment download failed with HTTP ${response.status}`);
+      throw new Error(
+        `attachment download failed with HTTP ${response.status}`,
+      );
     }
-    const length = response.headers['content-length'];
+    const length = response.headers["content-length"];
     if (length !== undefined && Number(length) !== attachment.size) {
-      throw new Error('attachment download size does not match the Manifest');
+      throw new Error("attachment download size does not match the Manifest");
     }
-    const temporary = join(dirname(destination), `.awiki-lite-${randomUUID()}.part`);
-    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-    const digest = createHash('sha256');
+    const temporary = join(
+      dirname(destination),
+      `.awiki-lite-${randomUUID()}.part`,
+    );
+    const fd = openSync(
+      temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      0o600,
+    );
+    const digest = createHash("sha256");
     let total = 0;
     try {
       for await (const piece of response.chunks()) {
@@ -328,32 +404,41 @@ export class AttachmentService {
           const chunk = piece.subarray(offset, end);
           total += chunk.length;
           if (total > attachment.size) {
-            throw new Error('attachment download exceeds the Manifest size');
+            throw new Error("attachment download exceeds the Manifest size");
           }
           digest.update(chunk);
-          writeSync(fd, chunk);
+          let written = 0;
+          while (written < chunk.length) {
+            written += writeSync(fd, chunk, written);
+          }
           offset = end;
         }
       }
-      const encoded = digest.digest('base64url');
+      const encoded = digest.digest("base64url");
       if (total !== attachment.size || encoded !== attachment.sha256B64u) {
-        throw new Error('attachment download failed integrity verification');
+        throw new Error("attachment download failed integrity verification");
       }
       fsyncSync(fd);
-    } finally {
+    } catch (error) {
       closeSync(fd);
+      unlinkSync(temporary);
+      throw error;
     }
+    closeSync(fd);
     try {
-      renameSync(temporary, destination);
+      linkSync(temporary, destination);
     } catch {
       unlinkSync(temporary);
-      throw new Error('attachment output file already exists');
+      throw new Error("attachment output file already exists");
     }
+    unlinkSync(temporary);
     return destination;
   }
 }
 
-export function readableFromPrepared(prepared: PreparedFile): Readable & { bytesRead: number } {
+export function readableFromPrepared(
+  prepared: PreparedFile,
+): Readable & { bytesRead: number } {
   let bytesRead = 0;
   const stream = new Readable({
     read() {
@@ -366,7 +451,7 @@ export function readableFromPrepared(prepared: PreparedFile): Readable & { bytes
       this.push(chunk);
     },
   }) as Readable & { bytesRead: number };
-  Object.defineProperty(stream, 'bytesRead', {
+  Object.defineProperty(stream, "bytesRead", {
     get() {
       return bytesRead;
     },
@@ -374,21 +459,31 @@ export function readableFromPrepared(prepared: PreparedFile): Readable & { bytes
   return stream;
 }
 
-function controlMeta(senderDid: string, serviceDid: string, operationId: string, createdAt: string): Record<string, unknown> {
+function controlMeta(
+  senderDid: string,
+  serviceDid: string,
+  operationId: string,
+  createdAt: string,
+): Record<string, unknown> {
   return {
     profile: ATTACHMENT_PROFILE,
-    security_profile: 'transport-protected',
+    security_profile: "transport-protected",
     sender_did: senderDid,
-    target: { kind: 'service', did: serviceDid },
+    target: { kind: "service", did: serviceDid },
     operation_id: operationId,
     created_at: createdAt,
   };
 }
 
-function filterUploadHeaders(value: Record<string, unknown>): Record<string, string> {
+function filterUploadHeaders(
+  value: Record<string, unknown>,
+): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [key, item] of Object.entries(value)) {
-    if (UPLOAD_HEADER_ALLOWLIST.has(key.toLowerCase()) && typeof item === 'string') {
+    if (
+      UPLOAD_HEADER_ALLOWLIST.has(key.toLowerCase()) &&
+      typeof item === "string"
+    ) {
       headers[key] = item;
     }
   }
@@ -396,16 +491,17 @@ function filterUploadHeaders(value: Record<string, unknown>): Record<string, str
 }
 
 function guessMime(filename: string): string {
-  if (filename.endsWith('.png')) return 'image/png';
-  if (filename.endsWith('.jpg') || filename.endsWith('.jpeg')) return 'image/jpeg';
-  if (filename.endsWith('.txt')) return 'text/plain';
-  if (filename.endsWith('.pdf')) return 'application/pdf';
-  return 'application/octet-stream';
+  if (filename.endsWith(".png")) return "image/png";
+  if (filename.endsWith(".jpg") || filename.endsWith(".jpeg"))
+    return "image/jpeg";
+  if (filename.endsWith(".txt")) return "text/plain";
+  if (filename.endsWith(".pdf")) return "application/pdf";
+  return "application/octet-stream";
 }
 
 function asObject(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error('service returned an invalid result');
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("service returned an invalid result");
   }
   return value as Record<string, unknown>;
 }

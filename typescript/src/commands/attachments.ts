@@ -28,7 +28,11 @@ export function registerAttachmentCommand(root: Command): void {
           const { settings, store, http } = createRuntime();
           try {
             const workflow = new AttachmentWorkflow(
-              new AttachmentService(http.client, settings.messageServiceUrl),
+              new AttachmentService(
+                http.client,
+                settings.messageServiceUrl,
+                settings.allowPrivateNetwork,
+              ),
               new MessageService(http.client, settings.messageServiceUrl),
               new GroupService(http.client, settings.messageServiceUrl),
               store,
@@ -68,10 +72,16 @@ export async function sendAttachmentMessage(
     const resolvedRecipient =
       recipientDid === undefined
         ? undefined
-        : await resolvePeerDid(http.client, recipientDid, identity.handle);
+        : await resolvePeerDid(http.client, recipientDid, identity.handle, {
+            allowPrivateNetwork: settings.allowPrivateNetwork,
+          });
     const passphrase = await promptPassphrase();
     const workflow = new AttachmentWorkflow(
-      new AttachmentService(http.client, settings.messageServiceUrl),
+      new AttachmentService(
+        http.client,
+        settings.messageServiceUrl,
+        settings.allowPrivateNetwork,
+      ),
       new MessageService(http.client, settings.messageServiceUrl),
       new GroupService(http.client, settings.messageServiceUrl),
       store,

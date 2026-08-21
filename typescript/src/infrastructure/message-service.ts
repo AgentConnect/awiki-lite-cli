@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
 
+import {
+  ProtocolResponseError,
+  SyncRecoveryRequiredError,
+} from "../application/errors.js";
 import type {
   AttachmentRef,
   AuthenticatedIdentity,
   ChatMessage,
   PendingOperation,
+  SyncBootstrapState,
   UnlockedIdentity,
 } from "../domain/models.js";
 import { validateWbaDid } from "../domain/validation.js";
@@ -119,31 +124,25 @@ export function buildMarkRead(
   });
 }
 
-export function buildSyncDelta(
+export function buildInbox(
   did: string,
-  sinceEventSeq: string,
-  limit = 100,
+  limit: number,
+  skip = 0,
 ): Record<string, unknown> {
-  validateDecimalCursor(sinceEventSeq, "since_event_seq");
-  return syncParams(did, {
-    user_did: did,
-    since_event_seq: sinceEventSeq,
-    limit,
-  });
+  return localParams("anp.inbox.local.v1", did, { user_did: did, limit, skip });
 }
 
-export function buildSyncThreadAfter(
+export function buildHistory(
   did: string,
   peerDid: string,
-  afterServerSeq: string,
-  limit = 100,
+  limit: number,
+  skip = 0,
 ): Record<string, unknown> {
-  validateDecimalCursor(afterServerSeq, "after_server_seq");
-  return syncParams(did, {
+  return localParams("anp.direct.local.v1", did, {
     user_did: did,
-    thread: { kind: "direct", peer_did: validateDid(peerDid) },
-    after_server_seq: afterServerSeq,
+    peer_did: validateDid(peerDid),
     limit,
+    skip,
   });
 }
 
@@ -157,6 +156,31 @@ export function buildCapabilities(did: string): Record<string, unknown> {
       created_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
     },
     body: {},
+  };
+}
+
+export function buildSyncBootstrap(
+  did: string,
+  clientInstanceId: string,
+): Record<string, unknown> {
+  if (!clientInstanceId.trim()) {
+    throw new Error("client_instance_id must not be empty");
+  }
+  return {
+    meta: {
+      profile: "anp.sync.local.v2",
+      security_profile: "transport-protected",
+      sender_did: did,
+      operation_id: `op-${randomUUID()}`,
+      created_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    },
+    body: {
+      client_instance_id: clientInstanceId,
+      capabilities: {
+        sync_profile: "anp.sync.local.v2",
+        event_schema_max: 1,
+      },
+    },
   };
 }
 
@@ -177,32 +201,6 @@ function localParams(
     meta: { profile, security_profile: "transport-protected", sender_did: did },
     body,
   };
-}
-
-function syncParams(
-  did: string,
-  body: Record<string, unknown>,
-): Record<string, unknown> {
-  const limit = body.limit;
-  if (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 100) {
-    throw new Error("limit must be between 1 and 100");
-  }
-  return {
-    meta: {
-      profile: "anp.sync.local.v1",
-      security_profile: "transport-protected",
-      sender_did: did,
-      operation_id: `op-${randomUUID()}`,
-      created_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-    },
-    body,
-  };
-}
-
-function validateDecimalCursor(value: string, field: string): void {
-  if (!/^\d+$/.test(value)) {
-    throw new Error(`${field} must be a non-negative decimal string`);
-  }
 }
 
 export class MessageService {
@@ -253,6 +251,68 @@ export class MessageService {
         "message service does not advertise the required Direct Base proof",
       );
     }
+  }
+
+  async bootstrapSync(
+    identity: AuthenticatedIdentity | UnlockedIdentity,
+    clientInstanceId: string,
+  ): Promise<SyncBootstrapState> {
+    const value = asObject(
+      await callJsonRpc(
+        this.client,
+        this.endpoint,
+        "sync.bootstrap",
+        buildSyncBootstrap(identity.identity.did, clientInstanceId),
+        { accessToken: identity.session.accessToken },
+      ),
+    );
+    if (value.mode === "compact_recovery_required") {
+      throw new SyncRecoveryRequiredError();
+    }
+    if (value.mode !== "tail_only") {
+      throw new ProtocolResponseError(
+        "service returned an invalid sync bootstrap mode",
+      );
+    }
+    const cursor = asObject(value.cursor, "sync bootstrap cursor");
+    const streamEpoch = nonemptyString(cursor.stream_epoch, "stream_epoch");
+    const scanSeq = nonemptyString(cursor.scan_seq, "scan_seq");
+    if (
+      !/^[0-9]+$/.test(streamEpoch) ||
+      BigInt(streamEpoch) < 1n ||
+      !/^[0-9]+$/.test(scanSeq)
+    ) {
+      throw new ProtocolResponseError(
+        "service returned an invalid sync bootstrap cursor",
+      );
+    }
+    for (const field of [
+      "read_state_baseline",
+      "group_state_baseline",
+      "warnings",
+    ]) {
+      if (!Array.isArray(value[field])) {
+        throw new ProtocolResponseError(`service returned an invalid ${field}`);
+      }
+    }
+    if (
+      (value.warnings as unknown[]).some((item) => typeof item !== "string")
+    ) {
+      throw new ProtocolResponseError(
+        "service returned invalid sync bootstrap warnings",
+      );
+    }
+    const bootstrap: SyncBootstrapState = {
+      accountId: nonemptyString(value.account_id, "account_id"),
+      deviceId: nonemptyString(value.device_id, "device_id"),
+      serverTime: nonemptyString(value.server_time, "server_time"),
+      streamEpoch,
+      scanSeq,
+    };
+    if (bootstrap.deviceId !== identity.identity.deviceId) {
+      throw new ProtocolResponseError("sync bootstrap returned another device");
+    }
+    return bootstrap;
   }
 
   async send(
@@ -340,28 +400,26 @@ export class MessageService {
     limit: number,
     skip: number,
   ): Promise<[ChatMessage[], boolean]> {
-    const peers = await this.directPeers(identity);
-    const messages: ChatMessage[] = [];
-    for (const peer of peers) {
-      const [threadMessages] = await this.threadMessages(identity, peer, null);
-      messages.push(
-        ...threadMessages.filter(
-          (message) => message.targetDid === identity.identity.did,
-        ),
-      );
+    const result = asObject(
+      await callJsonRpc(
+        this.client,
+        this.endpoint,
+        "inbox.get",
+        buildInbox(identity.identity.did, limit, skip),
+        {
+          accessToken: identity.session.accessToken,
+        },
+      ),
+    );
+    if (!Array.isArray(result.messages)) {
+      throw new Error("service returned an invalid message page");
     }
-    const unique = [
-      ...new Map(
-        messages.map((message) => [message.messageId, message]),
-      ).values(),
+    return [
+      result.messages
+        .map((item) => parseChat(item, identity.identity.did))
+        .filter((item) => item !== null),
+      result.has_more === true,
     ];
-    unique.sort((left, right) => {
-      const leftKey = `${left.createdAt ?? ""}\u0000${left.messageId}`;
-      const rightKey = `${right.createdAt ?? ""}\u0000${right.messageId}`;
-      return leftKey < rightKey ? 1 : leftKey > rightKey ? -1 : 0;
-    });
-    const end = skip + limit;
-    return [unique.slice(skip, end), unique.length > end];
   }
 
   async history(
@@ -370,13 +428,24 @@ export class MessageService {
     limit: number,
     skip: number,
   ): Promise<[ChatMessage[], boolean]> {
-    const [messages, remoteHasMore] = await this.threadMessages(
-      identity,
-      peerDid,
-      skip + limit + 1,
+    const result = asObject(
+      await callJsonRpc(
+        this.client,
+        this.endpoint,
+        "direct.get_history",
+        buildHistory(identity.identity.did, peerDid, limit, skip),
+        { accessToken: identity.session.accessToken },
+      ),
     );
-    const end = skip + limit;
-    return [messages.slice(skip, end), remoteHasMore || messages.length > end];
+    if (!Array.isArray(result.messages)) {
+      throw new Error("service returned an invalid message page");
+    }
+    return [
+      result.messages
+        .map((item) => parseChat(item, identity.identity.did))
+        .filter((item) => item !== null),
+      result.has_more === true,
+    ];
   }
 
   async markRead(
@@ -392,115 +461,11 @@ export class MessageService {
         { accessToken: identity.session.accessToken },
       ),
     );
-    return Number(result.updated ?? messageIds.length);
-  }
-
-  private async directPeers(
-    identity: AuthenticatedIdentity,
-  ): Promise<string[]> {
-    let cursor = "0";
-    const peers = new Set<string>();
-    while (true) {
-      const page = asObject(
-        await callJsonRpc(
-          this.client,
-          this.endpoint,
-          "sync.delta",
-          buildSyncDelta(identity.identity.did, cursor),
-          {
-            accessToken: identity.session.accessToken,
-          },
-        ),
-      );
-      if (page.snapshot_required === true) {
-        throw new Error(
-          "message sync history is no longer available from the beginning",
-        );
-      }
-      if (!Array.isArray(page.events)) {
-        throw new Error("service returned an invalid sync event page");
-      }
-      for (const value of page.events) {
-        const event = asObject(value, "sync event");
-        if (
-          typeof event.payload !== "object" ||
-          event.payload === null ||
-          Array.isArray(event.payload)
-        ) {
-          continue;
-        }
-        const payload = event.payload as Record<string, unknown>;
-        if (
-          typeof payload.thread !== "object" ||
-          payload.thread === null ||
-          Array.isArray(payload.thread)
-        ) {
-          continue;
-        }
-        const thread = payload.thread as Record<string, unknown>;
-        if (thread.kind !== "direct") {
-          continue;
-        }
-        if (typeof thread.peer_did !== "string") {
-          throw new Error("service returned an invalid direct thread");
-        }
-        peers.add(validateDid(thread.peer_did, "direct thread"));
-      }
-      if (page.has_more !== true) {
-        return [...peers].sort();
-      }
-      const next = requiredString(page, ["next_event_seq"], "next_event_seq");
-      validateRemoteCursor(next, "next_event_seq");
-      if (BigInt(next) <= BigInt(cursor)) {
-        throw new Error("sync.delta did not advance its cursor");
-      }
-      cursor = next;
+    const updated = result.updated ?? result.updated_count ?? messageIds.length;
+    if (!Number.isInteger(updated) || Number(updated) < 0) {
+      throw new Error("service returned an invalid updated_count");
     }
-  }
-
-  private async threadMessages(
-    identity: AuthenticatedIdentity,
-    peerDid: string,
-    requested: number | null,
-  ): Promise<[ChatMessage[], boolean]> {
-    let cursor = "0";
-    const messages: ChatMessage[] = [];
-    let hasMore = false;
-    while (requested === null || messages.length < requested) {
-      const page = asObject(
-        await callJsonRpc(
-          this.client,
-          this.endpoint,
-          "sync.thread_after",
-          buildSyncThreadAfter(identity.identity.did, peerDid, cursor),
-          { accessToken: identity.session.accessToken },
-        ),
-      );
-      if (!Array.isArray(page.messages)) {
-        throw new Error("service returned an invalid message page");
-      }
-      for (const item of page.messages) {
-        const message = parseChat(item, identity.identity.did);
-        if (message !== null) {
-          messages.push(message);
-        }
-      }
-      hasMore = page.has_more === true;
-      if (!hasMore) {
-        break;
-      }
-      const next = requiredString(
-        page,
-        ["next_after_server_seq"],
-        "next_after_server_seq",
-      );
-      validateRemoteCursor(next, "next_after_server_seq");
-      if (BigInt(next) <= BigInt(cursor)) {
-        throw new Error("sync.thread_after did not advance its cursor");
-      }
-      cursor = next;
-    }
-    return [messages, hasMore];
+    return Number(updated);
   }
 }
 
@@ -566,12 +531,11 @@ function requiredString(
   throw new Error(`service returned an invalid ${label}`);
 }
 
-function validateRemoteCursor(value: string, field: string): void {
-  try {
-    validateDecimalCursor(value, field);
-  } catch {
-    throw new Error(`service returned an invalid ${field}`);
+function nonemptyString(value: unknown, field: string): string {
+  if (typeof value !== "string" || !value) {
+    throw new ProtocolResponseError(`service returned an invalid ${field}`);
   }
+  return value;
 }
 
 function asObject(value: unknown, field = "result"): Record<string, unknown> {

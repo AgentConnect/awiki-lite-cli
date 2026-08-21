@@ -1,7 +1,10 @@
 import { describe, expect, test } from "vitest";
 
 import { ProtocolResponseError } from "../src/application/errors.js";
-import { decodeJsonRpcResponse } from "../src/infrastructure/rpc.js";
+import {
+  decodeJsonRpcResponse,
+  fixedAddressLookup,
+} from "../src/infrastructure/rpc.js";
 
 function response(payload: unknown) {
   return {
@@ -18,6 +21,25 @@ function response(payload: unknown) {
 }
 
 describe("JSON-RPC response decoding", () => {
+  test("fixed DNS lookup supports single-address and all-address callers", async () => {
+    const lookup = fixedAddressLookup("203.0.113.10", 4);
+    const single = await new Promise<unknown>((resolve, reject) => {
+      lookup("ignored.example", {}, (error, address, family) => {
+        if (error) reject(error);
+        else resolve({ address, family });
+      });
+    });
+    const all = await new Promise<unknown>((resolve, reject) => {
+      lookup("ignored.example", { all: true }, (error, addresses) => {
+        if (error) reject(error);
+        else resolve(addresses);
+      });
+    });
+
+    expect(single).toEqual({ address: "203.0.113.10", family: 4 });
+    expect(all).toEqual([{ address: "203.0.113.10", family: 4 }]);
+  });
+
   test("accepts a result accompanied by error null", async () => {
     await expect(
       decodeJsonRpcResponse(

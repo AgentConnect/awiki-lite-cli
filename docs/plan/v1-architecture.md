@@ -19,12 +19,12 @@ v1 的成功标准只有四项：
 ## 2. 外部契约与设计依据
 
 - ANP SDK：PyPI `anp` 包，使用 DID WBA、one-device Manifest、W3C proof 和 RFC 9421 origin proof 能力。
-- 注册：User Service `POST /user-service/handle/rpc` 的 `send_otp`，以及 `POST /user-service/did-auth/rpc` 的 `register`。
-- 私聊：Message Service `/im/rpc` 的 `direct.send`、`inbox.get`、`direct.get_history`。
+- 注册：User Service `POST /user-service/v1/handle/rpc` 的 `send_otp`，以及 `POST /user-service/v1/did-auth/rpc` 的 `register`。
+- 私聊：Message Service `/im/rpc` 的 `sync.bootstrap`、`direct.send`、`inbox.get`、`direct.get_history`。
 - 群聊：`group.create`、`group.add`、`group.send`、`group.list_messages`。
 - 附件：`attachment.create_slot` → HTTPS `PUT upload_uri` → `attachment.commit_object` → Direct/Group Base 附件消息；下载使用 `attachment.get_download_ticket`。
 
-所有消息固定为 `transport-protected`；不得导入或调用 Direct/Group E2EE 路径。服务地址默认 `https://awiki.info`，可通过环境变量覆盖。
+所有消息固定为 `transport-protected`；不得导入或调用 Direct/Group E2EE 路径。服务地址默认 `https://awiki.ai`，可通过环境变量覆盖。
 
 ## 3. 目录结构
 
@@ -65,7 +65,7 @@ Typer command
         → secure local state store
 ```
 
-默认状态目录由 `platformdirs` 决定，允许 `AWIKI_LITE_STATE_DIR` 覆盖。只保存一个 `identity.json`、对应私钥文件、Bearer token 和少量分页游标。秘密文件权限必须为 `0600`，写入采用同目录临时文件加原子替换；日志和异常不得输出 token、OTP 或私钥。没有恢复能力意味着删除状态目录即永久丢失身份控制权，CLI 必须在注册前明确提示。
+默认状态目录由 `platformdirs` 决定，允许 `AWIKI_LITE_STATE_DIR` 覆盖。只保存一个 `identity.json`、对应私钥文件、Bearer token，以及 Sync V2 首次设备登记所需的随机安装 ID 和服务端游标。Lite 不保存本地消息数据库。秘密文件权限必须为 `0600`，写入采用同目录临时文件加原子替换；日志和异常不得输出 token、OTP、恢复 token 或私钥。没有恢复能力意味着删除状态目录即永久丢失身份控制权，CLI 必须在注册前明确提示。
 
 User Service 当前要求新客户端提交 one-device Manifest。这里的 Manifest 只用于服务端协议兼容：始终生成一个本机设备，不暴露 join、revoke、recovery 或第二设备命令。
 
