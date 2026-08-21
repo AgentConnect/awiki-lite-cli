@@ -44,7 +44,7 @@ def test_attachment_service_selection_requires_exact_plain_profile() -> None:
         "service": [
             {
                 "type": "ANPMessageService",
-                "serviceEndpoint": "https://message.example.test/im/rpc",
+                "serviceEndpoint": "https://message.example.test/anp-im/rpc",
                 "serviceDid": "did:wba:message.example.test",
                 "profiles": [ATTACHMENT_PROFILE],
                 "securityProfiles": ["transport-protected"],

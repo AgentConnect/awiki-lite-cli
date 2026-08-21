@@ -124,6 +124,20 @@ def test_private_text_input_modes_are_mutually_exclusive() -> None:
     assert "mutually exclusive" in group.stderr
 
 
+def test_msg_send_reports_empty_text_as_invalid_input() -> None:
+    cases = [
+        ["msg", "send", "--to", "bob", "--text", ""],
+        ["msg", "send", "--to", "bob"],
+        ["msg", "send", "--group", "did:wba:example.com:group:one", "--text", ""],
+        ["msg", "send", "--group", "did:wba:example.com:group:one"],
+    ]
+    for args in cases:
+        result = runner.invoke(app, args, input="\n")
+        assert result.exit_code == 2
+        assert "Invalid input: message text must not be empty" in result.stderr
+        assert "failed" not in result.stderr.lower()
+
+
 def test_msg_send_requires_exactly_one_target() -> None:
     missing = runner.invoke(app, ["msg", "send", "--text", "hello"])
     conflicting = runner.invoke(

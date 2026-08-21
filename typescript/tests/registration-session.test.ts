@@ -31,6 +31,20 @@ describe("registration and session", () => {
     expect(() => registrationDomain("not-a-url")).toThrow(InvalidInputError);
   });
 
+  test("generated identity advertises the Message Service RPC endpoint", () => {
+    const generated = generateIdentity(
+      "example.test",
+      "alice",
+      "https://message.example.test/",
+    );
+    const services = generated.didDocument.service as Array<{
+      serviceEndpoint: string;
+    }>;
+    expect(services[0]?.serviceEndpoint).toBe(
+      "https://message.example.test/anp-im/rpc",
+    );
+  });
+
   test("registration bootstraps sync before publishing the identity", async () => {
     const root = tempDir();
     const store = new SecureStateStore(root);

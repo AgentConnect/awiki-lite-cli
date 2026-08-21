@@ -3,6 +3,8 @@ import { Command } from "commander";
 import { RegistrationWorkflow } from "../application/registration.js";
 import { generateIdentity } from "../infrastructure/anp-sdk.js";
 import { MessageService } from "../infrastructure/message-service.js";
+import type { SyncBootstrapState } from "../domain/models.js";
+import type { SecureStateStore } from "../infrastructure/state.js";
 import { UserService } from "../infrastructure/user-service.js";
 import {
   createRuntime,
@@ -60,4 +62,56 @@ export function registerIdentityCommand(root: Command): void {
         }
       });
     });
+  root
+    .command("init-sync")
+    .description(
+      "Explicitly initialize Sync V2 for an identity created by an older Lite version.",
+    )
+    .action(() => {
+      wrapMain("sync", async () => {
+        const { settings, store, http } = createRuntime();
+        try {
+          const identity = store.loadPublic();
+          const existing = store.loadSync(identity.did);
+          if (existing !== null && existing.bootstrap !== null) {
+            console.log(
+              `Message sync is already initialized for ${identity.did}`,
+            );
+            return;
+          }
+          console.log(
+            "Warning: the server may use tail_only; messages from before initialization may remain unavailable.",
+          );
+          const bootstrap = await initializeMessageSync(
+            store,
+            new MessageService(http.client, settings.messageServiceUrl),
+          );
+          console.log(
+            `Message sync initialized for ${identity.did} at stream ${bootstrap.streamEpoch}:${bootstrap.scanSeq}`,
+          );
+        } finally {
+          http.close();
+        }
+      });
+    });
+}
+
+export async function initializeMessageSync(
+  store: SecureStateStore,
+  service: MessageService,
+): Promise<SyncBootstrapState> {
+  const identity = {
+    identity: store.loadPublic(),
+    session: store.loadSession(),
+  };
+  const installation = store.initializeSync(identity.identity.did);
+  if (installation.bootstrap !== null) {
+    return installation.bootstrap;
+  }
+  const bootstrap = await service.bootstrapSync(
+    identity,
+    installation.clientInstanceId,
+  );
+  store.completeSyncBootstrap(installation, bootstrap);
+  return bootstrap;
 }

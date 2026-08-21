@@ -100,7 +100,7 @@ def generate_identity(hostname: str, handle: str, message_service_url: str) -> G
             {
                 "id": "#message",
                 "type": "ANPMessageService",
-                "serviceEndpoint": message_service_url.rstrip("/") + "/im/rpc",
+                "serviceEndpoint": message_service_url.rstrip("/") + "/anp-im/rpc",
                 "serviceDid": _default_service_did(message_service_url),
                 "profiles": [
                     PROFILE_CORE_BINDING_V1,

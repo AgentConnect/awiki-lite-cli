@@ -33,7 +33,10 @@ function commandAt(program: Command, path: string): Command {
   return current;
 }
 
-function runCli(args: string[]): {
+function runCli(
+  args: string[],
+  input?: string,
+): {
   stdout: string;
   stderr: string;
   status: number | null;
@@ -44,6 +47,7 @@ function runCli(args: string[]): {
     {
       encoding: "utf8",
       env: { ...process.env },
+      input,
     },
   );
   return {
@@ -149,6 +153,27 @@ describe("awiki-lite-ts help", () => {
     expect(conflicting.status).toBe(2);
     expect(missing.stderr).toContain("exactly one");
     expect(conflicting.stderr).toContain("exactly one");
+  });
+
+  test("msg send reports empty text as invalid input", () => {
+    for (const result of [
+      runCli(["msg", "send", "--to", "bob", "--text="]),
+      runCli(["msg", "send", "--to", "bob"], "\n"),
+      runCli([
+        "msg",
+        "send",
+        "--group",
+        "did:wba:example.com:group:one",
+        "--text=",
+      ]),
+      runCli(["msg", "send", "--group", "did:wba:example.com:group:one"], "\n"),
+    ]) {
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        "Invalid input: message text must not be empty",
+      );
+      expect(result.stderr).not.toContain("Messaging failed");
+    }
   });
 
   test("numeric options reject invalid values before state or network access", () => {

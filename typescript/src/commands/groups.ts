@@ -12,6 +12,7 @@ import {
   promptPassphrase,
   promptText,
   requireInteger,
+  requireNonemptyText,
   wrapMain,
 } from "./runtime.js";
 
@@ -216,9 +217,9 @@ export async function sendGroupMessage(
   if (stdin && text !== undefined) {
     throw new InvalidInputError("--text and --stdin are mutually exclusive");
   }
-  const textValue = stdin
-    ? readFileSync(0, "utf8")
-    : (text ?? (await promptText("Message")));
+  const textValue = requireNonemptyText(
+    stdin ? readFileSync(0, "utf8") : (text ?? (await promptText("Message"))),
+  );
   const passphrase = await promptPassphrase();
   const { settings, store, http } = createRuntime();
   try {

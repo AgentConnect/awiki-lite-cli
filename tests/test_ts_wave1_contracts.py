@@ -78,6 +78,15 @@ def test_python_packaging_is_unchanged() -> None:
     assert (ROOT / "src/awiki_lite_cli/cli.py").is_file()
 
 
+def test_read_commands_never_infer_sync_migration_from_empty_pages() -> None:
+    contract = (ROOT / "docs/contracts/v0.1-wire-contract.md").read_text(encoding="utf-8")
+    python_direct = (ROOT / "src/awiki_lite_cli/commands/direct.py").read_text(encoding="utf-8")
+    typescript_direct = (ROOT / "typescript/src/commands/direct.ts").read_text(encoding="utf-8")
+    assert "never infer sync state from an empty inbox/history page" in contract
+    assert "bootstrap_sync" not in python_direct
+    assert "bootstrapSync" not in typescript_direct
+
+
 def test_combined_runner_only_orchestrates_independent_suites() -> None:
     runner = (ROOT / "scripts/test_all.py").read_text(encoding="utf-8")
     assert '[sys.executable, "-m", "pytest"]' in runner

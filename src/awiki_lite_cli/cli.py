@@ -12,6 +12,7 @@ app = typer.Typer(
 )
 identity_app = typer.Typer(help="Manage the local AWiki identity.", no_args_is_help=True)
 identity_app.command("register")(identity.register)
+identity_app.command("init-sync")(identity.init_sync)
 identity_app.command("refresh-token")(session.refresh)
 
 runtime_app = typer.Typer(help="Manage the local receiving runtime.", no_args_is_help=True)

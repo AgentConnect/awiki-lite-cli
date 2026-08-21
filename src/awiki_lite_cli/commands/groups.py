@@ -109,7 +109,10 @@ def send(
         raise typer.Exit(2)
     text_value = sys.stdin.read() if stdin else text
     if text_value is None:
-        text_value = typer.prompt("Message")
+        text_value = typer.prompt("Message", default="", show_default=False)
+    if not text_value or not text_value.strip():
+        typer.echo("Invalid input: message text must not be empty", err=True)
+        raise typer.Exit(2)
 
     async def action(
         workflow: GroupWorkflow, store: SecureStateStore, _client: httpx.AsyncClient

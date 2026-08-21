@@ -57,6 +57,13 @@ export function requireInteger(
   return value;
 }
 
+export function requireNonemptyText(value: string): string {
+  if (!value.trim()) {
+    throw new InvalidInputError("message text must not be empty");
+  }
+  return value;
+}
+
 export function createRuntime(
   overrides: {
     stateDir?: string;
@@ -85,6 +92,7 @@ export function mapError(
   kind:
     | "registration"
     | "session"
+    | "sync"
     | "messaging"
     | "group"
     | "attachment"
@@ -128,13 +136,15 @@ export function mapError(
       ? "Registration failed"
       : kind === "session"
         ? "Session refresh failed"
-        : kind === "group"
-          ? "Group command failed"
-          : kind === "attachment"
-            ? "Attachment command failed"
-            : kind === "listener"
-              ? "Listener failed"
-              : "Messaging failed";
+        : kind === "sync"
+          ? "Message sync initialization failed"
+          : kind === "group"
+            ? "Group command failed"
+            : kind === "attachment"
+              ? "Attachment command failed"
+              : kind === "listener"
+                ? "Listener failed"
+                : "Messaging failed";
   const message = error instanceof Error ? error.message : String(error);
   if (error instanceof StateError || error instanceof Error) {
     console.error(`${label}: ${message}`);

@@ -1,7 +1,7 @@
 {
   "tree": {
     "": ["id", "msg", "group", "runtime"],
-    "id": ["register", "refresh-token"],
+    "id": ["register", "init-sync", "refresh-token"],
     "msg": ["send", "inbox", "history", "attachment"],
     "msg attachment": ["download"],
     "group": ["create", "list", "get", "members", "add", "messages"],
@@ -11,6 +11,7 @@
   "options": {
     "id register": ["--handle", "--phone"],
     "msg send": ["--to", "--group", "--text", "--file"],
+    "msg inbox": ["--limit", "--mark-read"],
     "msg history": ["--with", "--limit"],
     "msg attachment download": ["--message-id", "--attachment-id", "--output"],
     "group create": ["--name"],

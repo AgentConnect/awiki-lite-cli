@@ -1,21 +1,29 @@
-import json
+import asyncio
 from pathlib import Path
 
-import httpx
 import pytest
+from typer.testing import CliRunner
 
-from awiki_lite_cli.commands.direct import _history_with_sync, _inbox_with_sync
-from awiki_lite_cli.domain.models import AuthenticatedIdentity, IdentityState
+from awiki_lite_cli.cli import app
+from awiki_lite_cli.commands import direct
+from awiki_lite_cli.commands.identity import _init_sync
+from awiki_lite_cli.config import Settings
+from awiki_lite_cli.domain.models import (
+    AuthenticatedIdentity,
+    IdentityState,
+    SyncBootstrapState,
+)
 from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
 from awiki_lite_cli.infrastructure.message_service import MessageService
 from awiki_lite_cli.infrastructure.state import SecureStateStore
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["inbox", "history"])
-async def test_legacy_empty_read_bootstraps_once_and_retries(kind: str, tmp_path: Path) -> None:
+def test_empty_legacy_reads_do_not_start_sync_migration(
+    kind: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     generated = generate_identity("example.test", "alice", "https://example.test")
-    public = IdentityState(
+    identity = IdentityState(
         generated.did,
         "alice.example.test",
         generated.device_signing_key_id,
@@ -24,7 +32,7 @@ async def test_legacy_empty_read_bootstraps_once_and_retries(kind: str, tmp_path
     )
     store = SecureStateStore(tmp_path / kind)
     store.save_registration(
-        public,
+        identity,
         "fixture-token",
         {
             "root-key": generated.root_private_key,
@@ -33,61 +41,40 @@ async def test_legacy_empty_read_bootstraps_once_and_retries(kind: str, tmp_path
         },
         "long passphrase value",
     )
-    identity = AuthenticatedIdentity(store.load_public(), store.load_session())
-    read_method = "inbox.get" if kind == "inbox" else "direct.get_history"
     methods: list[str] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        method = body["method"]
-        methods.append(method)
-        if method == "sync.bootstrap":
-            result = {
-                "mode": "tail_only",
-                "account_id": "account-1",
-                "device_id": public.device_id,
-                "server_time": "2026-08-21T00:00:00Z",
-                "cursor": {"stream_epoch": "1", "scan_seq": "7"},
-                "read_state_baseline": [],
-                "group_state_baseline": [],
-                "warnings": [],
-            }
-        elif methods.count(read_method) == 1:
-            result = {"messages": [], "has_more": False}
-        else:
-            result = {
-                "messages": [
-                    {
-                        "id": "message-after-bootstrap",
-                        "sender_did": public.did,
-                        "receiver_did": public.did,
-                        "content": "visible",
-                        "content_type": "text/plain",
-                        "sent_at": "2026-08-21T00:00:01Z",
-                    }
-                ],
-                "has_more": False,
-            }
-        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+    class FakeService:
+        client = object()
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        service = MessageService(client, "https://example.test")
-        if kind == "inbox":
-            page = await _inbox_with_sync(service, store, identity, 10, 0)
-            await _inbox_with_sync(service, store, identity, 10, 0)
-        else:
-            page = await _history_with_sync(service, store, identity, public.did, 10, 0)
-            await _history_with_sync(service, store, identity, public.did, 10, 0)
+        async def inbox(self, _identity, _limit, _skip):  # type: ignore[no-untyped-def]
+            methods.append("inbox.get")
+            return [], False
 
-    assert [item.message_id for item in page[0]] == ["message-after-bootstrap"]
-    assert methods[:3] == [read_method, "sync.bootstrap", read_method]
-    assert methods[3:] == [read_method]
-    installation = store.load_sync(public.did)
-    assert installation is not None and installation.bootstrap is not None
+        async def history(self, _identity, _peer, _limit, _skip):  # type: ignore[no-untyped-def]
+            methods.append("direct.get_history")
+            return [], False
+
+    def run(action):  # type: ignore[no-untyped-def]
+        return asyncio.run(action(FakeService(), store))
+
+    async def resolve(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        return identity.did
+
+    monkeypatch.setattr(direct, "_run", run)
+    monkeypatch.setattr(direct, "resolve_peer_did", resolve)
+    args = ["msg", "inbox"] if kind == "inbox" else ["msg", "history", "--with", "bob"]
+
+    result = CliRunner().invoke(app, args)
+
+    assert result.exit_code == 0
+    assert methods == ["inbox.get" if kind == "inbox" else "direct.get_history"]
+    assert store.load_sync(identity.did) is None
 
 
 @pytest.mark.asyncio
-async def test_legacy_empty_later_page_does_not_bootstrap(tmp_path: Path) -> None:
+async def test_explicit_sync_initialization_is_retry_safe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     generated = generate_identity("example.test", "alice", "https://example.test")
     public = IdentityState(
         generated.did,
@@ -96,7 +83,7 @@ async def test_legacy_empty_later_page_does_not_bootstrap(tmp_path: Path) -> Non
         generated.device_id,
         generated.did_document,
     )
-    store = SecureStateStore(tmp_path / "later-page")
+    store = SecureStateStore(tmp_path / "explicit")
     store.save_registration(
         public,
         "fixture-token",
@@ -108,24 +95,25 @@ async def test_legacy_empty_later_page_does_not_bootstrap(tmp_path: Path) -> Non
         "long passphrase value",
     )
     identity = AuthenticatedIdentity(store.load_public(), store.load_session())
-    methods: list[str] = []
+    client_ids: list[str] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        methods.append(body["method"])
-        return httpx.Response(
-            200,
-            json={
-                "jsonrpc": "2.0",
-                "id": body["id"],
-                "result": {"messages": [], "has_more": False},
-            },
+    async def bootstrap(_service, authenticated, client_id):  # type: ignore[no-untyped-def]
+        client_ids.append(client_id)
+        return SyncBootstrapState(
+            "account-1",
+            authenticated.identity.device_id,
+            "2026-08-21T00:00:00Z",
+            "1",
+            "7",
         )
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        await _inbox_with_sync(
-            MessageService(client, "https://example.test"), store, identity, 10, 10
-        )
+    monkeypatch.setattr(MessageService, "bootstrap_sync", bootstrap)
+    settings = Settings("https://example.test", "https://example.test", store.root)
 
-    assert methods == ["inbox.get"]
-    assert store.load_sync(public.did) is None
+    first = await _init_sync(settings, store, identity)
+    second = await _init_sync(settings, store, identity)
+
+    assert first == second
+    assert len(client_ids) == 1
+    saved = store.load_sync(public.did)
+    assert saved is not None and saved.bootstrap == first

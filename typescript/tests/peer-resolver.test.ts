@@ -140,4 +140,87 @@ describe("peer handle resolution", () => {
       resolvePeerDid(client, "bob", "alice.awiki.test"),
     ).rejects.toThrow(/mismatched/);
   });
+
+  test("rejects an inactive handle", async () => {
+    const client: HttpClient = {
+      async get() {
+        return response({
+          handle: "bob.awiki.test",
+          did: "did:wba:awiki.test:user:bob:e1_fixture",
+          status: "inactive",
+        });
+      },
+      async post() {
+        throw new Error("unused post");
+      },
+      async put() {
+        throw new Error("unused put");
+      },
+      async getStream() {
+        throw new Error("unused getStream");
+      },
+    };
+
+    await expect(
+      resolvePeerDid(client, "bob", "alice.awiki.test"),
+    ).rejects.toThrow(/inactive/);
+  });
+
+  test("rejects a DID document with a failed signature", async () => {
+    const generated = generateIdentity(
+      "awiki.test",
+      "bob",
+      "https://awiki.test",
+    );
+    const tampered = structuredClone(generated.didDocument);
+    const services = tampered.service as Array<Record<string, unknown>>;
+    services[0]!.serviceEndpoint = "https://attacker.example/im/rpc";
+    const client: HttpClient = {
+      async get(url) {
+        return response(
+          new URL(url).pathname === "/.well-known/handle/bob"
+            ? {
+                handle: "bob.awiki.test",
+                did: generated.did,
+                status: "active",
+              }
+            : tampered,
+        );
+      },
+      async post() {
+        throw new Error("unused post");
+      },
+      async put() {
+        throw new Error("unused put");
+      },
+      async getStream() {
+        throw new Error("unused getStream");
+      },
+    };
+
+    await expect(
+      resolvePeerDid(client, "bob", "alice.awiki.test"),
+    ).rejects.toThrow(/failed verification/);
+  });
+
+  test("rejects a missing handle document", async () => {
+    const client: HttpClient = {
+      async get() {
+        return { ...response({}), status: 404, ok: false };
+      },
+      async post() {
+        throw new Error("unused post");
+      },
+      async put() {
+        throw new Error("unused put");
+      },
+      async getStream() {
+        throw new Error("unused getStream");
+      },
+    };
+
+    await expect(
+      resolvePeerDid(client, "bob", "alice.awiki.test"),
+    ).rejects.toThrow(/unable to read handle resolution URL/);
+  });
 });

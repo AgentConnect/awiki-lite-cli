@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 
 import { SyncRecoveryRequiredError } from "../src/application/errors.js";
-import { historyWithSync, inboxWithSync } from "../src/commands/direct.js";
+import { initializeMessageSync } from "../src/commands/identity.js";
 import {
   MessageService,
   buildSyncBootstrap,
@@ -99,120 +99,10 @@ describe("Sync V2 bootstrap", () => {
     ).rejects.toBeInstanceOf(SyncRecoveryRequiredError);
   });
 
-  test.each(["inbox", "history"] as const)(
-    "legacy empty %s bootstraps once and retries",
-    async (kind) => {
-      const root = mkdtempSync(join(tmpdir(), "awiki-sync-command-"));
-      const store = new SecureStateStore(root);
-      const keys = {
-        "root-key": generateKeyPairSync("ed25519")
-          .privateKey.export({ type: "pkcs8", format: "pem" })
-          .toString(),
-        "device-signing": generateKeyPairSync("ed25519")
-          .privateKey.export({ type: "pkcs8", format: "pem" })
-          .toString(),
-        "device-agreement": generateKeyPairSync("x25519")
-          .privateKey.export({ type: "pkcs8", format: "pem" })
-          .toString(),
-      };
-      store.stageRegistration(identity.identity, keys, "twelve chars!!");
-      store.finalizeRegistration(identity.identity, "token-1");
-      const readMethod = kind === "inbox" ? "inbox.get" : "direct.get_history";
-      const methods: string[] = [];
-      const client = {
-        async post(
-          _url: string,
-          init: { headers: Record<string, string>; body: string },
-        ) {
-          const request = JSON.parse(init.body) as {
-            id: string;
-            method: string;
-          };
-          methods.push(request.method);
-          let result: Record<string, unknown>;
-          if (request.method === "sync.bootstrap") {
-            result = {
-              mode: "tail_only",
-              account_id: "account-1",
-              device_id: identity.identity.deviceId,
-              server_time: "2026-08-21T00:00:00Z",
-              cursor: { stream_epoch: "1", scan_seq: "7" },
-              read_state_baseline: [],
-              group_state_baseline: [],
-              warnings: [],
-            };
-          } else if (
-            methods.filter((method) => method === readMethod).length === 1
-          ) {
-            result = { messages: [], has_more: false };
-          } else {
-            result = {
-              messages: [
-                {
-                  id: "message-after-bootstrap",
-                  sender_did: identity.identity.did,
-                  receiver_did: identity.identity.did,
-                  content: "visible",
-                  content_type: "text/plain",
-                  sent_at: "2026-08-21T00:00:01Z",
-                },
-              ],
-              has_more: false,
-            };
-          }
-          return {
-            status: 200,
-            ok: true,
-            headers: {},
-            async json() {
-              return { jsonrpc: "2.0", id: request.id, result };
-            },
-            async bytes() {
-              return new Uint8Array();
-            },
-          };
-        },
-      } as never;
-      const service = new MessageService(client, "https://example.com");
-      const page =
-        kind === "inbox"
-          ? await inboxWithSync(service, store, identity, 10, 0)
-          : await historyWithSync(
-              service,
-              store,
-              identity,
-              identity.identity.did,
-              10,
-              0,
-            );
-      if (kind === "inbox") {
-        await inboxWithSync(service, store, identity, 10, 0);
-      } else {
-        await historyWithSync(
-          service,
-          store,
-          identity,
-          identity.identity.did,
-          10,
-          0,
-        );
-      }
-      expect(page[0].map((item) => item.messageId)).toEqual([
-        "message-after-bootstrap",
-      ]);
-      expect(methods.slice(0, 3)).toEqual([
-        readMethod,
-        "sync.bootstrap",
-        readMethod,
-      ]);
-      expect(methods.slice(3)).toEqual([readMethod]);
-      expect(store.loadSync(identity.identity.did)?.bootstrap).not.toBeNull();
-    },
-  );
-
-  test("legacy empty later page does not bootstrap", async () => {
-    const root = mkdtempSync(join(tmpdir(), "awiki-sync-later-page-"));
-    const store = new SecureStateStore(root);
+  test("explicit initialization reuses one installation and bootstraps once", async () => {
+    const store = new SecureStateStore(
+      mkdtempSync(join(tmpdir(), "awiki-explicit-sync-")),
+    );
     const keys = {
       "root-key": generateKeyPairSync("ed25519")
         .privateKey.export({ type: "pkcs8", format: "pem" })
@@ -226,36 +116,28 @@ describe("Sync V2 bootstrap", () => {
     };
     store.stageRegistration(identity.identity, keys, "twelve chars!!");
     store.finalizeRegistration(identity.identity, "token-1");
-    const methods: string[] = [];
-    const client = {
-      async post(_url: string, init: { body: string }) {
-        const request = JSON.parse(init.body) as { id: string; method: string };
-        methods.push(request.method);
+    const clientIds: string[] = [];
+    const service = {
+      async bootstrapSync(
+        authenticated: { identity: { deviceId: string } },
+        clientInstanceId: string,
+      ) {
+        clientIds.push(clientInstanceId);
         return {
-          status: 200,
-          ok: true,
-          headers: {},
-          async json() {
-            return {
-              jsonrpc: "2.0",
-              id: request.id,
-              result: { messages: [], has_more: false },
-            };
-          },
-          async bytes() {
-            return new Uint8Array();
-          },
+          accountId: "account-1",
+          deviceId: authenticated.identity.deviceId,
+          serverTime: "2026-08-21T00:00:00Z",
+          streamEpoch: "1",
+          scanSeq: "7",
         };
       },
-    } as never;
-    await inboxWithSync(
-      new MessageService(client, "https://example.com"),
-      store,
-      identity,
-      10,
-      10,
-    );
-    expect(methods).toEqual(["inbox.get"]);
-    expect(store.loadSync(identity.identity.did)).toBeNull();
+    };
+
+    const first = await initializeMessageSync(store, service as never);
+    const second = await initializeMessageSync(store, service as never);
+
+    expect(second).toEqual(first);
+    expect(clientIds).toHaveLength(1);
+    expect(store.loadSync(identity.identity.did)?.bootstrap).toEqual(first);
   });
 });

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { InvalidInputError } from "./application/errors.js";
 
 export const DEFAULT_SERVICE_URL = "https://awiki.ai";
-/** Isolated until the bidirectional flock test is green in this environment. */
+/** Kept separate because each Lite implementation owns one local identity state. */
 export const DEFAULT_STATE_APPNAME = "awiki-lite-cli-ts";
 
 export interface Settings {

@@ -95,3 +95,67 @@ async def test_resolve_peer_did_rejects_mismatched_handle() -> None:
                 "alice.awiki.test",
                 address_resolver=public_address,
             )
+
+
+@pytest.mark.asyncio
+async def test_resolve_peer_did_rejects_inactive_handle() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "handle": "bob.awiki.test",
+                "did": "did:wba:awiki.test:user:bob:e1_fixture",
+                "status": "inactive",
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError, match="inactive"):
+            await resolve_peer_did(
+                client,
+                "bob",
+                "alice.awiki.test",
+                address_resolver=public_address,
+            )
+
+
+@pytest.mark.asyncio
+async def test_resolve_peer_did_rejects_failed_document_signature() -> None:
+    generated = generate_identity("awiki.test", "bob", "https://awiki.test")
+    tampered = json.loads(json.dumps(generated.did_document))
+    tampered["service"][0]["serviceEndpoint"] = "https://attacker.example/im/rpc"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/.well-known/handle/bob":
+            return httpx.Response(
+                200,
+                json={
+                    "handle": "bob.awiki.test",
+                    "did": generated.did,
+                    "status": "active",
+                },
+            )
+        return httpx.Response(200, json=tampered)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError, match="failed verification"):
+            await resolve_peer_did(
+                client,
+                "bob",
+                "alice.awiki.test",
+                address_resolver=public_address,
+            )
+
+
+@pytest.mark.asyncio
+async def test_resolve_peer_did_rejects_not_found_handle() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(404))
+    ) as client:
+        with pytest.raises(RuntimeError, match="unable to read handle resolution URL"):
+            await resolve_peer_did(
+                client,
+                "bob",
+                "alice.awiki.test",
+                address_resolver=public_address,
+            )

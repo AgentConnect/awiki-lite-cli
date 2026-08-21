@@ -93,7 +93,7 @@
 - 三者都是本域 local-only 视图，使用 hop-level 身份认证，不生成 origin proof；
 - 首版只读取 `transport-protected` 普通消息；不得请求 `direct-e2ee` selector；
 - 使用服务端 `limit/skip` 或当前契约规定的游标分页，不自行拼装可靠同步 checkpoint。
-- 旧版 Lite 身份没有同步登记文件时，先保留能够返回非空结果的 legacy 读取；只有第一页得到空页时才自动 bootstrap 并重试，避免把正常的越界分页误判为未登记。
+- 读取命令不得根据空页推断同步状态，也不得自动 bootstrap；旧版 Lite 身份继续使用 legacy 读取，只能由用户主动执行 `id init-sync`，新身份则在注册发布本地身份前 bootstrap，避免把正常的空 inbox 或空 history 错当成未登记。
 
 ## 5. 用户命令面
 

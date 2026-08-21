@@ -25,6 +25,7 @@ Language does not appear in the token.
 | Command | Flags / arguments | Notes |
 |---|---|---|
 | `id register` | `--handle`, `--phone` | Print the unrecoverable-state warning first |
+| `id init-sync` | none | Explicit opt-in for older identities; warn that `tail_only` may omit earlier messages |
 | `id refresh-token` | none | One-shot DID HTTP signature `get_me` |
 | `msg send` | exactly one of `--to PEER` / `--group GROUP_DID`; optional `--text`, `--file`, hidden `--stdin` | `PEER` is a DID or handle; text and `--stdin` are mutually exclusive; `--file` changes text to the attachment caption |
 | `msg inbox` | `--limit` 1–100, hidden `--skip`, `--mark-read` | Default is read-only |

@@ -96,17 +96,18 @@ for untrusted service endpoints.
 
 Registration also performs the Message Service's one-time Sync V2 device initialization. There is
 no extra command to run: Lite stores a random installation ID locally and reuses it only when an
-interrupted initialization must be retried. An identity created by an older Lite version is
-initialized automatically if its first inbox/history query returns an empty page. The server's
-`tail_only` rule means messages from before that device initialization are not copied into the new
-device's history. Accounts that require full historical recovery must use the full AWiki CLI;
-Lite does not download or maintain a local message database.
+interrupted initialization must be retried. Read commands never initialize sync just because a
+page is empty. For an identity created by an older Lite version, explicitly run `id init-sync` to
+start Sync V2 delivery. The server's `tail_only` rule means messages from before that device
+initialization may not be copied into the new device's history. Accounts that require full
+historical recovery must use the full AWiki CLI; Lite does not download or maintain a local message
+database.
 
 注册时还会自动完成 Message Service 所需的一次性 Sync V2 设备初始化，不需要用户再执行额外
-命令。Lite 只在本地保存一个随机安装 ID；如果初始化中断，重试会继续使用同一个 ID。旧版 Lite
-创建的身份如果第一次读取收件箱/历史得到空页，也会自动补做设备登记。服务器的 `tail_only`
-规则决定了登记之前的消息不会倒灌到这个新设备。需要恢复完整旧历史的账号应使用完整版 AWiki
-CLI；Lite 不下载或维护本地消息数据库。
+命令。Lite 只在本地保存一个随机安装 ID；如果初始化中断，重试会继续使用同一个 ID。读取命令
+不会因为某一页为空就自动初始化同步。旧版 Lite 创建的身份需要主动执行 `id init-sync`，才会开始
+接收 Sync V2 后续消息。服务器的 `tail_only` 规则决定了初始化之前的消息可能不会补到这个新设备。
+需要恢复完整旧历史的账号应使用完整版 AWiki CLI；Lite 不下载或维护本地消息数据库。
 
 ## Common Commands / 常用命令
 
@@ -130,6 +131,8 @@ uv run awiki-lite msg send --to bob --file ./report.pdf
 uv run awiki-lite msg send --group 'did:wba:...:group:...' --file ./report.pdf
 uv run awiki-lite msg attachment download --message-id MESSAGE_ID --attachment-id ATTACHMENT_ID --output ./downloads
 uv run awiki-lite id refresh-token
+# Older Lite identities only / 仅旧版 Lite 创建的身份需要
+uv run awiki-lite id init-sync
 
 # Real-time sync hints / 前台接收实时同步提示，按 Ctrl-C 停止
 uv run awiki-lite runtime listener run
