@@ -64,7 +64,9 @@ def test_launchagent_plist_uses_argument_array_and_nonsecret_environment(tmp_pat
     manager = LaunchAgentManager(context(tmp_path), FakeRunner())
     value = plistlib.loads(manager.plist_content())
     assert value["Label"] == SERVICE_NAME
-    assert value["ProgramArguments"][-4:] == ["runtime", "listener", "run", "--service-mode"]
+    arguments = value["ProgramArguments"]
+    assert arguments[2:6] == ["awiki_lite_cli", "runtime", "listener", "run"]
+    assert "--service-mode" in arguments
     assert value["KeepAlive"] == {"SuccessfulExit": False}
     assert value["EnvironmentVariables"] == {
         "AWIKI_LITE_STATE_DIR": str(context(tmp_path).state_dir),

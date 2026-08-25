@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from rich.text import Text
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -37,13 +38,15 @@ def test_msg_help_exposes_only_completed_commands() -> None:
 
     send_help = runner.invoke(app, ["msg", "send", "--help"])
     assert send_help.exit_code == 0
+    send_output = Text.from_ansi(send_help.stdout).plain
     for option in ("--to", "--group", "--text", "--file"):
-        assert option in send_help.stdout
+        assert option in send_output
 
     download_help = runner.invoke(app, ["msg", "attachment", "download", "--help"])
     assert download_help.exit_code == 0
+    download_output = Text.from_ansi(download_help.stdout).plain
     for option in ("--message-id", "--attachment-id", "--output"):
-        assert option in download_help.stdout
+        assert option in download_output
 
 
 def test_group_help_exposes_only_v02_commands() -> None:
@@ -121,6 +124,20 @@ def test_private_text_input_modes_are_mutually_exclusive() -> None:
     assert "mutually exclusive" in group.stderr
 
 
+def test_msg_send_reports_empty_text_as_invalid_input() -> None:
+    cases = [
+        ["msg", "send", "--to", "bob", "--text", ""],
+        ["msg", "send", "--to", "bob"],
+        ["msg", "send", "--group", "did:wba:example.com:group:one", "--text", ""],
+        ["msg", "send", "--group", "did:wba:example.com:group:one"],
+    ]
+    for args in cases:
+        result = runner.invoke(app, args, input="\n")
+        assert result.exit_code == 2
+        assert "Invalid input: message text must not be empty" in result.stderr
+        assert "failed" not in result.stderr.lower()
+
+
 def test_msg_send_requires_exactly_one_target() -> None:
     missing = runner.invoke(app, ["msg", "send", "--text", "hello"])
     conflicting = runner.invoke(
@@ -195,6 +212,18 @@ def test_msg_send_dispatches_direct_group_and_attachment(monkeypatch, tmp_path: 
             False,
         ),
     ]
+
+
+def test_numeric_options_report_invalid_input() -> None:
+    for args in (
+        ["msg", "inbox", "--limit", "-1"],
+        ["msg", "history", "--with", "bob", "--limit", "1.5"],
+        ["group", "list", "--limit", "NaN"],
+        ["group", "messages", "--group", "did:wba:example.test:group:a", "--since-seq", "-1"],
+    ):
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2, args
+        assert "Invalid input" in result.stderr
 
 
 def test_register_input_error_uses_exit_two(monkeypatch) -> None:

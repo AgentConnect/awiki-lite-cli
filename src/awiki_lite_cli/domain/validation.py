@@ -22,7 +22,7 @@ def validate_wba_did(value: str, *, field: str = "DID") -> str:
     _validate_percent_encoding(encoded_host, field)
     hostname = unquote(encoded_host).lower().rstrip(".")
     validate_public_hostname(hostname, field=field)
-    if encoded_host.lower().rstrip(".") != hostname:
+    if encoded_host.rstrip(".") != hostname:
         raise ValueError(f"{field} hostname must use canonical lowercase ASCII")
     for encoded_segment in parts[3:]:
         _validate_percent_encoding(encoded_segment, field)

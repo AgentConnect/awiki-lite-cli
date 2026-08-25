@@ -18,6 +18,7 @@ from awiki_lite_cli.infrastructure.group_service import (
     GroupService,
     build_group_add,
     build_group_create,
+    build_group_info,
     build_group_list,
     build_group_members,
     build_group_messages,
@@ -95,12 +96,19 @@ def attachment() -> AttachmentRef:
 def test_group_builders_are_plain_closed_and_deterministic() -> None:
     identity, _ = contexts()
     create_pending = pending("group.create", SERVICE_DID)
-    create = build_group_create(identity, SERVICE_DID, "Fixture", create_pending)
+    create = build_group_create(identity, SERVICE_DID, "Fixture", 500, create_pending)
     assert create["meta"]["profile"] == "anp.group.base.v1"
     assert create["meta"]["security_profile"] == "transport-protected"
     assert create["meta"]["target"] == {"kind": "service", "did": SERVICE_DID}
     assert create["body"]["group_policy"]["admission_mode"] == "admin-add"
-    assert create == build_group_create(identity, SERVICE_DID, "Fixture", create_pending)
+    assert create["body"]["group_policy"]["max_members"] == "500"
+    assert create == build_group_create(identity, SERVICE_DID, "Fixture", 500, create_pending)
+    assert (
+        build_group_create(identity, SERVICE_DID, "Fixture", 100, create_pending)["body"][
+            "group_policy"
+        ]["max_members"]
+        == "100"
+    )
 
     add = build_group_add(identity, GROUP_DID, MEMBER_DID, pending("group.add", GROUP_DID))
     assert add["body"] == {"member_did": MEMBER_DID, "role": "member"}
@@ -139,6 +147,8 @@ def test_group_local_builders_preserve_cursor_and_since_seq() -> None:
     }
     with pytest.raises(ValueError, match="negative"):
         build_group_messages(did, GROUP_DID, 20, -1)
+    with pytest.raises(ValueError, match="group DID"):
+        build_group_info(did, "did:peer:not-a-wba-group")
 
 
 @pytest.mark.asyncio
@@ -153,23 +163,33 @@ async def test_group_mutations_preflight_and_validate_identifiers() -> None:
         if body["method"] == "anp.get_capabilities":
             result = capabilities()
         elif body["method"] == "group.create":
+            meta = body["params"]["meta"]
             result = {
-                "accepted": True,
                 "group_did": GROUP_DID,
                 "group_state_version": "1",
                 "group_event_seq": "1",
                 "created_at": "now",
                 "creator_did": unlocked.identity.did,
                 "group_profile": {"display_name": "Fixture"},
+                "group_receipt": {
+                    "subject_method": "group.create",
+                    "group_did": GROUP_DID,
+                    "operation_id": meta["operation_id"],
+                },
             }
         elif body["method"] == "group.add":
+            meta = body["params"]["meta"]
             result = {
-                "accepted": True,
                 "group_did": GROUP_DID,
                 "member_did": MEMBER_DID,
                 "membership_status": "active",
                 "group_state_version": "2",
                 "group_event_seq": "2",
+                "group_receipt": {
+                    "subject_method": "group.add",
+                    "group_did": GROUP_DID,
+                    "operation_id": meta["operation_id"],
+                },
             }
         else:
             meta = body["params"]["meta"]
@@ -188,7 +208,7 @@ async def test_group_mutations_preflight_and_validate_identifiers() -> None:
         service = GroupService(client, "https://example.test")
         caps = await service.capabilities(authenticated)
         created = await service.create(
-            unlocked, caps.service_did, "Fixture", pending("group.create", SERVICE_DID)
+            unlocked, caps.service_did, "Fixture", 500, pending("group.create", SERVICE_DID)
         )
         assert created.group_did == GROUP_DID
         assert (

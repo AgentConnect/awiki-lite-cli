@@ -21,14 +21,21 @@ The project uses Python 3.10+ and `uv`.
 - `uv run ruff check .` and `uv run ruff format --check .` enforce style.
 - `uv run mypy src` performs strict type checking; `uv build` verifies packaging.
 
-A parallel TypeScript package lives in `typescript/` (`@awiki/lite-cli`, binary `awiki-lite-ts`). There is no root npm/pnpm workspace. The sibling ANP TypeScript SDK is a `file:` dependency at `../../anp/anp/typescript/ts_sdk` and its `dist/` is gitignored, so build it first:
+A parallel TypeScript package lives in `typescript/` (`@awiki/lite-cli`, binary `awiki-lite-ts`) and uses the same `id`/`msg`/`group`/`runtime` command syntax as Python. There is no root npm/pnpm workspace. The ANP TypeScript SDK is pinned to the published npm package `@awiki/anp-typescript-sdk@0.9.3`; contributors do not need a sibling ANP checkout.
 
 ```bash
-(cd ../anp/anp/typescript/ts_sdk && npm ci && npm run build)
 (cd typescript && pnpm install && pnpm test && pnpm exec awiki-lite-ts --help)
 ```
 
-CI also has an `interop-lock` job that runs `tests/lock_holder.py` against `typescript/tests/interop/lock.test.ts`. The TypeScript default state directory remains `awiki-lite-cli-ts` until both lock directions are proven. Switch listener language with a fresh `listener install`.
+`uv run pytest` is the Python-only default suite. `pnpm test` is the TypeScript-only default suite
+and must not spawn Python or `uv`.
+`uv run python scripts/test_all.py` runs the two independent default suites in sequence without
+enabling remote tests; it continues to the second suite after a failure and returns nonzero if
+either suite fails.
+
+Python and TypeScript use separate default state directories but share the native listener service
+name. Do not point both implementations at the same `AWIKI_LITE_STATE_DIR`; shared local state is
+unsupported. Install only one native listener and reinstall it when switching implementations.
 
 Use Node 20.11+ and pnpm 9.15.x (`packageManager` in `typescript/package.json`). `uv build` remains a Python-only wheel of `src/awiki_lite_cli`.
 
@@ -38,7 +45,11 @@ Use four-space indentation, Ruff formatting, and complete type annotations. Name
 
 ## Testing Guidelines
 
-Use pytest files named `test_*.py` and test functions named `test_*`. Add tests with every feature or bug fix. Cover CLI exit codes, invalid arguments, JSON-RPC errors, timeouts, idempotent retries, and secret redaction. Mock unit-level network calls; reserve real `awiki.info` access for explicit integration tests. Keep fixtures deterministic and credential-free.
+Use pytest files named `test_*.py` and test functions named `test_*`. Add tests with every feature or bug fix. Cover CLI exit codes, invalid arguments, JSON-RPC errors, timeouts, idempotent retries, and secret redaction. Mock unit-level network calls; reserve real service access for explicit integration tests. Keep fixtures deterministic and credential-free.
+
+`tests/fixtures/cli-command-contract.json` is the shared public CLI contract. The root Python test
+and `typescript/tests/cli.test.ts` must each validate their own real command tree against it whenever
+command names or public options change. The test suites do not start the other implementation.
 
 ## Commit & Pull Request Guidelines
 

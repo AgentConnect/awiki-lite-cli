@@ -16,6 +16,7 @@ from awiki_lite_cli.domain.models import (
     PendingOperation,
     UnlockedIdentity,
 )
+from awiki_lite_cli.domain.validation import validate_wba_did
 from awiki_lite_cli.infrastructure.anp_sdk import generate_origin_proof
 from awiki_lite_cli.infrastructure.attachment_manifest import (
     MANIFEST_CONTENT_TYPE,
@@ -35,16 +36,18 @@ ORIGIN_SCHEME = "anp-rfc9421-origin-proof-v1"
 class GroupCapabilities:
     service_did: str
     max_group_message_bytes: int | None
+    max_members: int | None
 
 
 def validate_group_did(value: str) -> str:
-    return validate_did(value)
+    return validate_wba_did(value, field="group DID")
 
 
 def build_group_create(
     identity: UnlockedIdentity,
     service_did: str,
     display_name: str,
+    max_members: int,
     pending: PendingOperation,
 ) -> dict[str, Any]:
     name = display_name.strip()
@@ -64,7 +67,7 @@ def build_group_create(
                 "update_policy": "owner",
             },
             "attachments_allowed": True,
-            "max_members": "500",
+            "max_members": str(max_members),
         },
     }
     return _signed_group_params(
@@ -212,7 +215,7 @@ def _group_meta(profile: str, did: str, group_did: str | None = None) -> dict[st
         "sender_did": validate_did(did),
     }
     if group_did is not None:
-        meta["target"] = {"kind": "group", "did": group_did}
+        meta["target"] = {"kind": "group", "did": validate_group_did(group_did)}
     return meta
 
 
@@ -257,19 +260,26 @@ class GroupService:
         service_did = validate_did(service_did)
         limits = result.get("limits")
         maximum = _optional_positive_int(limits, "max_group_message_bytes")
-        return GroupCapabilities(service_did, maximum)
+        features = result.get("features")
+        participant = features.get("group_participant") if isinstance(features, dict) else None
+        return GroupCapabilities(
+            service_did,
+            maximum,
+            _optional_positive_int(participant, "max_members"),
+        )
 
     async def create(
         self,
         identity: UnlockedIdentity,
         service_did: str,
         display_name: str,
+        max_members: int,
         pending: PendingOperation,
     ) -> GroupSummary:
         result = await self._mutate(
             identity,
             "group.create",
-            build_group_create(identity, service_did, display_name, pending),
+            build_group_create(identity, service_did, display_name, max_members, pending),
         )
         return _parse_group_summary(result)
 
@@ -456,7 +466,12 @@ class GroupService:
                 if attempt == 1:
                     raise
         value = _object(result)
-        if value.get("accepted") is not True:
+        accepted = value.get("accepted")
+        if accepted is not True and (
+            accepted is not None
+            or method not in {"group.create", "group.add"}
+            or value.get("group_receipt") is None
+        ):
             raise RuntimeError(f"service returned an invalid {method} result")
         _validate_mutation_result(method, params, value)
         return value

@@ -18,3 +18,7 @@ class JsonRpcFailure(RuntimeError):
 
 class ProtocolResponseError(RuntimeError):
     """A remote response violated the closed protocol or application schema."""
+
+
+class SyncRecoveryRequiredError(RuntimeError):
+    """The account needs the full Sync V2 recovery flow omitted by Lite."""

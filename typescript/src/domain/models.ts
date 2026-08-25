@@ -10,6 +10,20 @@ export interface SessionState {
   readonly accessToken: string;
 }
 
+export interface SyncBootstrapState {
+  readonly accountId: string;
+  readonly deviceId: string;
+  readonly serverTime: string;
+  readonly streamEpoch: string;
+  readonly scanSeq: string;
+}
+
+export interface SyncInstallationState {
+  readonly identityDid: string;
+  readonly clientInstanceId: string;
+  readonly bootstrap: SyncBootstrapState | null;
+}
+
 export interface PendingOperation {
   readonly schemaVersion: number;
   readonly kind: string;
@@ -100,7 +114,10 @@ export interface GroupMessage {
   readonly createdAt: string;
 }
 
-export function identityEquals(left: IdentityState, right: IdentityState): boolean {
+export function identityEquals(
+  left: IdentityState,
+  right: IdentityState,
+): boolean {
   return (
     left.did === right.did &&
     left.handle === right.handle &&
@@ -110,11 +127,18 @@ export function identityEquals(left: IdentityState, right: IdentityState): boole
   );
 }
 
-export function pendingEquals(left: PendingOperation, right: PendingOperation): boolean {
-  return JSON.stringify(pendingToJson(left)) === JSON.stringify(pendingToJson(right));
+export function pendingEquals(
+  left: PendingOperation,
+  right: PendingOperation,
+): boolean {
+  return (
+    JSON.stringify(pendingToJson(left)) === JSON.stringify(pendingToJson(right))
+  );
 }
 
-export function pendingToJson(pending: PendingOperation): Record<string, unknown> {
+export function pendingToJson(
+  pending: PendingOperation,
+): Record<string, unknown> {
   return {
     schema_version: pending.schemaVersion,
     kind: pending.kind,

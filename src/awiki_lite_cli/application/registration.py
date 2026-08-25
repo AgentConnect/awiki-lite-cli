@@ -7,8 +7,12 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
-from awiki_lite_cli.application.ports import RegistrationServicePort, StateStorePort
-from awiki_lite_cli.domain.models import IdentityState
+from awiki_lite_cli.application.ports import (
+    RegistrationServicePort,
+    StateStorePort,
+    SyncBootstrapServicePort,
+)
+from awiki_lite_cli.domain.models import AuthenticatedIdentity, IdentityState, SessionState
 
 HANDLE_RE = re.compile(r"^[a-z][a-z0-9_-]{2,31}$")
 
@@ -31,16 +35,18 @@ class RegistrationWorkflow:
     def __init__(
         self,
         service: RegistrationServicePort,
+        sync_service: SyncBootstrapServicePort,
         store: StateStorePort,
         message_url: str,
         identity_generator: Callable[[str, str, str], Any],
     ) -> None:
         self.service = service
+        self.sync_service = sync_service
         self.store = store
         self.message_url = message_url
         self.identity_generator = identity_generator
 
-    async def begin(self, handle_input: str, phone_input: str) -> tuple[str, str, str]:
+    async def begin(self, handle_input: str, phone_input: str) -> tuple[str, str, str, bool]:
         if self.store.exists:
             raise RuntimeError("a local identity already exists")
         handle = normalize_handle(handle_input)
@@ -51,8 +57,8 @@ class RegistrationWorkflow:
         validation = await self.service.validate_handle(handle, domain)
         if validation.get("available") is not True:
             raise ValueError(str(validation.get("message") or "handle is unavailable"))
-        await self.service.send_registration_otp(handle, domain, phone)
-        return handle, phone, domain
+        otp_required = await self.service.send_registration_otp(handle, domain, phone)
+        return handle, phone, domain, otp_required
 
     async def finish(
         self, handle: str, phone: str, domain: str, otp_code: str, passphrase: str
@@ -88,5 +94,14 @@ class RegistrationWorkflow:
         token = result.get("access_token")
         if not isinstance(token, str) or not token:
             raise RuntimeError("registration did not return a device access token")
+        installation = self.store.initialize_sync(identity.did)
+        if installation.bootstrap is None:
+            bootstrap = await self.sync_service.bootstrap_sync(
+                AuthenticatedIdentity(identity, SessionState(token)),
+                installation.client_instance_id,
+            )
+            self.store.complete_sync_bootstrap(installation, bootstrap)
+        elif installation.bootstrap.device_id != identity.device_id:
+            raise RuntimeError("sync installation belongs to another device")
         self.store.finalize_registration(identity, token)
         return identity

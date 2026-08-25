@@ -6,11 +6,32 @@ from __future__ import annotations
 import argparse
 import asyncio
 import secrets
+import sys
 import tempfile
 from pathlib import Path
 
 import httpx
-from remote_e2e import (
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from awiki_lite_cli.application.attachments import AttachmentWorkflow
+from awiki_lite_cli.application.groups import GroupWorkflow
+from awiki_lite_cli.application.registration import RegistrationWorkflow
+from awiki_lite_cli.domain.models import AttachmentContext, AuthenticatedIdentity
+from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
+from awiki_lite_cli.infrastructure.attachment_manifest import normalize_caption, parse_manifest
+from awiki_lite_cli.infrastructure.attachment_service import (
+    AttachmentService,
+    prepare_download_destination,
+    prepare_file,
+)
+from awiki_lite_cli.infrastructure.group_service import GroupService
+from awiki_lite_cli.infrastructure.message_service import MessageService
+from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
+from awiki_lite_cli.infrastructure.state import SecureStateStore
+from awiki_lite_cli.infrastructure.user_service import UserService
+from scripts.remote_e2e import (
     SERVICE_URL,
     TARGET,
     _cleanup,
@@ -20,17 +41,6 @@ from remote_e2e import (
     _resolve_peer_otp,
 )
 
-from awiki_lite_cli.application.attachments import AttachmentWorkflow
-from awiki_lite_cli.application.groups import GroupWorkflow
-from awiki_lite_cli.application.registration import RegistrationWorkflow
-from awiki_lite_cli.domain.models import AttachmentContext, AuthenticatedIdentity
-from awiki_lite_cli.infrastructure.attachment_service import AttachmentService
-from awiki_lite_cli.infrastructure.group_service import GroupService
-from awiki_lite_cli.infrastructure.message_service import MessageService
-from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
-from awiki_lite_cli.infrastructure.state import SecureStateStore
-from awiki_lite_cli.infrastructure.user_service import UserService
-
 
 def _attachments(client: httpx.AsyncClient, store: SecureStateStore) -> AttachmentWorkflow:
     return AttachmentWorkflow(
@@ -38,7 +48,14 @@ def _attachments(client: httpx.AsyncClient, store: SecureStateStore) -> Attachme
         MessageService(client, SERVICE_URL),
         GroupService(client, SERVICE_URL),
         store,
+        normalize_caption,
+        prepare_file,
+        prepare_download_destination,
     )
+
+
+def _groups(client: httpx.AsyncClient, store: SecureStateStore) -> GroupWorkflow:
+    return GroupWorkflow(GroupService(client, SERVICE_URL), store, parse_manifest)
 
 
 async def _run(repo_root: Path, values: dict[str, str]) -> None:
@@ -80,9 +97,15 @@ async def _run(repo_root: Path, values: dict[str, str]) -> None:
                 passphrase_a,
                 tolerate_sms_failure=True,
             )
-            flow_b = RegistrationWorkflow(UserService(client, SERVICE_URL), store_b, SERVICE_URL)
+            flow_b = RegistrationWorkflow(
+                UserService(client, SERVICE_URL),
+                MessageService(client, SERVICE_URL),
+                store_b,
+                SERVICE_URL,
+                generate_identity,
+            )
             try:
-                canonical_b, canonical_phone_b, domain_b = await flow_b.begin(handle_b, phone_b)
+                canonical_b, canonical_phone_b, domain_b, _ = await flow_b.begin(handle_b, phone_b)
             except JsonRpcFailure:
                 canonical_b, canonical_phone_b, domain_b = handle_b, phone_b, "awiki.info"
             otp_b = _resolve_peer_otp(operator, phone_b, handle_b)
@@ -91,8 +114,8 @@ async def _run(repo_root: Path, values: dict[str, str]) -> None:
             unlocked_a = store_a.unlock(passphrase_a)
             unlocked_b = store_b.unlock(passphrase_b)
             auth_b = AuthenticatedIdentity(unlocked_b.identity, unlocked_b.session)
-            group_a = GroupWorkflow(GroupService(client, SERVICE_URL), store_a)
-            group_b = GroupWorkflow(GroupService(client, SERVICE_URL), store_b)
+            group_a = _groups(client, store_a)
+            group_b = _groups(client, store_b)
 
             group = await group_a.create(unlocked_a, "AWiki Lite v0.2 E2E")
             await group_a.add(unlocked_a, group.group_did, unlocked_b.identity.did)

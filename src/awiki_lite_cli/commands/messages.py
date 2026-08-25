@@ -13,7 +13,9 @@ attachment_app = typer.Typer(help="Download message attachments.", no_args_is_he
 
 @app.command("send")
 def send(
-    recipient_did: Annotated[str | None, typer.Option("--to")] = None,
+    recipient_did: Annotated[
+        str | None, typer.Option("--to", help="Direct peer DID or handle.")
+    ] = None,
     group_did: Annotated[str | None, typer.Option("--group")] = None,
     text: Annotated[str | None, typer.Option("--text")] = None,
     file: Annotated[Path | None, typer.Option("--file")] = None,

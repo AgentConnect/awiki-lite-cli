@@ -171,3 +171,96 @@ async def test_group_messages_persist_only_validated_attachment_context(tmp_path
     assert context.group_did == GROUP_DID
     assert context.message_target_did is None
     assert context.attachment == attachment
+
+
+@pytest.mark.asyncio
+async def test_group_create_uses_advertised_member_cap(tmp_path: Path) -> None:
+    store, identity = unlocked_store(tmp_path)
+    seen: list[str] = []
+    member = "did:wba:example.test:user:bob"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "anp.get_capabilities":
+            result: object = {
+                **capabilities(),
+                "features": {"group_participant": {"max_members": "100"}},
+            }
+        elif body["method"] == "group.create":
+            seen.append(body["params"]["body"]["group_policy"]["max_members"])
+            meta = body["params"]["meta"]
+            result = {
+                "group_did": GROUP_DID,
+                "group_state_version": "1",
+                "group_event_seq": "1",
+                "created_at": "now",
+                "group_profile": {"display_name": "Room"},
+                "group_receipt": {
+                    "subject_method": "group.create",
+                    "group_did": GROUP_DID,
+                    "operation_id": meta["operation_id"],
+                },
+            }
+        else:
+            meta = body["params"]["meta"]
+            result = {
+                "group_did": GROUP_DID,
+                "member_did": member,
+                "membership_status": "active",
+                "group_state_version": "2",
+                "group_event_seq": "2",
+                "group_receipt": {
+                    "subject_method": "group.add",
+                    "group_did": GROUP_DID,
+                    "operation_id": meta["operation_id"],
+                },
+            }
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        workflow = GroupWorkflow(
+            GroupService(client, "https://example.test"), store, parse_manifest
+        )
+        await workflow.create(identity, "Room")
+        assert await workflow.add(identity, GROUP_DID, member) == member
+    assert seen == ["100"]
+
+
+@pytest.mark.asyncio
+async def test_group_create_default_cap_resumes_pre_cap_pending_state(tmp_path: Path) -> None:
+    store, identity = unlocked_store(tmp_path)
+    legacy_digest = hashlib.sha256(
+        json.dumps({"display_name": "Room"}, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    pending = store.prepare_operation(
+        "group.create", SERVICE_DID, legacy_digest, needs_message_id=False
+    )
+    seen_operation_ids: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "anp.get_capabilities":
+            result: object = capabilities()
+        else:
+            seen_operation_ids.append(body["params"]["meta"]["operation_id"])
+            meta = body["params"]["meta"]
+            result = {
+                "group_did": GROUP_DID,
+                "group_state_version": "1",
+                "group_event_seq": "1",
+                "created_at": "now",
+                "group_profile": {"display_name": "Room"},
+                "group_receipt": {
+                    "subject_method": "group.create",
+                    "group_did": GROUP_DID,
+                    "operation_id": meta["operation_id"],
+                },
+            }
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await GroupWorkflow(
+            GroupService(client, "https://example.test"), store, parse_manifest
+        ).create(identity, "Room")
+    assert seen_operation_ids == [pending.operation_id]
+    assert not (store.root / "pending-send.json").exists()

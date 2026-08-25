@@ -29,6 +29,26 @@ async def test_call_json_rpc_returns_result_and_bearer_token() -> None:
 
 
 @pytest.mark.asyncio
+async def test_call_json_rpc_accepts_nullable_error_with_result() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {"ok": True},
+                "error": None,
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await call_json_rpc(client, "https://example.test/rpc", "example.call", {})
+
+    assert result == {"ok": True}
+
+
+@pytest.mark.asyncio
 async def test_call_json_rpc_preserves_error_data_even_on_401() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)

@@ -100,7 +100,7 @@ def generate_identity(hostname: str, handle: str, message_service_url: str) -> G
             {
                 "id": "#message",
                 "type": "ANPMessageService",
-                "serviceEndpoint": message_service_url.rstrip("/") + "/im/rpc",
+                "serviceEndpoint": message_service_url.rstrip("/") + "/anp-im/rpc",
                 "serviceDid": _default_service_did(message_service_url),
                 "profiles": [
                     PROFILE_CORE_BINDING_V1,
@@ -190,6 +190,7 @@ async def resolve_attachment_service_did(
     *,
     client: httpx.AsyncClient | None = None,
     address_resolver: AddressResolver = resolve_public_addresses,
+    allow_private_network: bool = False,
 ) -> str:
     """Resolve and proof-check the sender's compatible ANPMessageService serviceDid."""
     validate_wba_did(sender_did, field="attachment sender DID")
@@ -199,9 +200,12 @@ async def resolve_attachment_service_did(
             resolution_url,
             resolver=address_resolver,
             field="attachment sender DID URL",
+            allow_private_network=allow_private_network,
         )
         owns_client = client is None
-        active_client = client or httpx.AsyncClient(timeout=10.0, trust_env=False)
+        active_client = client or httpx.AsyncClient(
+            timeout=10.0, trust_env=False, follow_redirects=False
+        )
         try:
             response = await active_client.get(
                 target.url,
@@ -214,13 +218,13 @@ async def resolve_attachment_service_did(
         finally:
             if owns_client:
                 await active_client.aclose()
-        _verify_resolved_document(sender_did, document)
+        verify_resolved_document(sender_did, document)
     except Exception:
         raise RuntimeError("unable to resolve the attachment sender DID document") from None
     return select_attachment_service_did(sender_did, document)
 
 
-def _verify_resolved_document(sender_did: str, document: Any) -> None:
+def verify_resolved_document(sender_did: str, document: Any) -> None:
     if not isinstance(document, dict) or document.get("id") != sender_did:
         raise ValueError("DID document ID mismatch")
     if not validate_did_document_binding(document, verify_proof=True):

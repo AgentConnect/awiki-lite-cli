@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import ssl
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -76,7 +77,11 @@ def parse_sync_changed(raw: str | bytes) -> SyncChanged:
         raise ListenerError("websocket notification is not valid JSON") from exc
     if not isinstance(value, dict) or value.get("method") != "sync.changed":
         raise ListenerError("websocket sent an unsupported notification")
-    payload = value.get("payload")
+    has_payload = "payload" in value
+    has_params = "params" in value
+    if has_payload == has_params:
+        raise ListenerError("sync.changed notification has an invalid shape")
+    payload = value.get("payload") if has_payload else value.get("params")
     sync = value.get("sync")
     if not isinstance(payload, dict) or not isinstance(sync, dict):
         raise ListenerError("sync.changed notification has an invalid shape")
@@ -111,6 +116,7 @@ async def listen(
     once: bool = False,
     connect_factory: Connect = connect,
     on_reconnect: Callable[[float], None] | None = None,
+    ssl_context: ssl.SSLContext | None = None,
 ) -> None:
     """Consume sync hints until cancelled, reconnecting with bounded backoff."""
     endpoint = websocket_url(service_base_url)
@@ -131,6 +137,7 @@ async def listen(
                 max_size=MAX_MESSAGE_BYTES,
                 max_queue=128,
                 proxy=None,
+                ssl=ssl_context,
             ) as socket:
                 if socket.subprotocol != SYNC_SUBPROTOCOL:
                     raise ListenerError("websocket server did not select awiki.sync.changed.v2")

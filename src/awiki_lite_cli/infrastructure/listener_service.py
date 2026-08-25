@@ -39,15 +39,18 @@ class ServiceContext:
     message_service_url: str
     home: Path
     uid: int | None = None
+    ca_bundle: Path | None = None
 
     @classmethod
-    def current(cls, state_dir: Path, message_service_url: str) -> ServiceContext:
+    def current(
+        cls, state_dir: Path, message_service_url: str, ca_bundle: Path | None = None
+    ) -> ServiceContext:
         try:
             home = Path.home()
         except RuntimeError as exc:
             raise ListenerServiceError("the current user home directory is unavailable") from exc
         uid = os.getuid() if hasattr(os, "getuid") else None
-        return cls(Path(sys.executable), state_dir, message_service_url, home, uid)
+        return cls(Path(sys.executable), state_dir, message_service_url, home, uid, ca_bundle)
 
 
 class CommandRunner:
@@ -110,22 +113,7 @@ class SystemdUserManager(ListenerServiceManager):
         return self.context.home / ".config" / "systemd" / "user" / self.unit_name
 
     def unit_content(self) -> str:
-        command = " ".join(
-            _systemd_quote(item)
-            for item in (
-                str(self.context.executable),
-                "-m",
-                "awiki_lite_cli",
-                "runtime",
-                "listener",
-                "run",
-                "--service-mode",
-                "--state-dir",
-                str(self.context.state_dir),
-                "--message-service-url",
-                self.context.message_service_url,
-            )
-        )
+        command = " ".join(_systemd_quote(item) for item in _service_command(self.context))
         return (
             "[Unit]\n"
             f"Description={SERVICE_DESCRIPTION}\n"
@@ -222,15 +210,7 @@ class LaunchAgentManager(ListenerServiceManager):
         logs = self.context.state_dir / "logs"
         value = {
             "Label": SERVICE_NAME,
-            "ProgramArguments": [
-                str(self.context.executable),
-                "-m",
-                "awiki_lite_cli",
-                "runtime",
-                "listener",
-                "run",
-                "--service-mode",
-            ],
+            "ProgramArguments": _service_command(self.context),
             "EnvironmentVariables": {
                 "AWIKI_LITE_STATE_DIR": str(self.context.state_dir),
                 "AWIKI_MESSAGE_SERVICE_URL": self.context.message_service_url,
@@ -297,21 +277,7 @@ class WindowsTaskManager(ListenerServiceManager):
     task_name = r"\AgentConnect\AWikiLiteListener"
 
     def _service_command(self) -> str:
-        return subprocess.list2cmdline(
-            [
-                str(self.context.executable),
-                "-m",
-                "awiki_lite_cli",
-                "runtime",
-                "listener",
-                "run",
-                "--service-mode",
-                "--state-dir",
-                str(self.context.state_dir),
-                "--message-service-url",
-                self.context.message_service_url,
-            ]
-        )
+        return subprocess.list2cmdline(_service_command(self.context))
 
     def status(self) -> ListenerServiceStatus:
         result = self.runner.run(
@@ -386,9 +352,10 @@ def service_manager(
     platform: str | None = None,
     runner: CommandRunner | None = None,
     context: ServiceContext | None = None,
+    ca_bundle: Path | None = None,
 ) -> ListenerServiceManager:
     selected = platform or sys.platform
-    resolved = context or ServiceContext.current(state_dir, message_service_url)
+    resolved = context or ServiceContext.current(state_dir, message_service_url, ca_bundle)
     if selected.startswith("linux"):
         return SystemdUserManager(resolved, runner)
     if selected == "darwin":
@@ -396,6 +363,25 @@ def service_manager(
     if selected in {"win32", "cygwin"}:
         return WindowsTaskManager(resolved, runner)
     return ListenerServiceManager(resolved, runner)
+
+
+def _service_command(context: ServiceContext) -> list[str]:
+    command = [
+        str(context.executable),
+        "-m",
+        "awiki_lite_cli",
+        "runtime",
+        "listener",
+        "run",
+        "--service-mode",
+        "--state-dir",
+        str(context.state_dir),
+        "--message-service-url",
+        context.message_service_url,
+    ]
+    if context.ca_bundle is not None:
+        command.extend(["--ca-bundle", str(context.ca_bundle)])
+    return command
 
 
 def _systemd_quote(value: str) -> str:

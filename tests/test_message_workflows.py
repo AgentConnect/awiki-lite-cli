@@ -101,7 +101,6 @@ async def test_inbox_filters_non_plain_and_mark_read_is_explicit() -> None:
                     },
                 ],
                 "has_more": False,
-                "total": 2,
             }
         else:
             result = {"updated_count": 1}
@@ -114,6 +113,39 @@ async def test_inbox_filters_non_plain_and_mark_read_is_explicit() -> None:
         assert [message.message_id for message in messages] == ["m1"]
         assert await service.mark_read(identity, ["m1"]) == 1
     assert methods == ["inbox.get", "inbox.mark_read"]
+
+
+@pytest.mark.asyncio
+async def test_history_delegates_bounded_pagination_to_service() -> None:
+    _, identity = contexts()
+    pages: list[tuple[int, int]] = []
+
+    def message(message_id: str, sequence: int) -> dict[str, object]:
+        return {
+            "id": message_id,
+            "server_seq": str(sequence),
+            "sender_did": "did:wba:example.test:user:bob",
+            "receiver_did": identity.identity.did,
+            "content": message_id,
+            "content_type": "text/plain",
+            "sent_at": f"2026-08-20T00:00:0{sequence}Z",
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["method"] == "direct.get_history"
+        page = body["params"]["body"]
+        pages.append((page["limit"], page["skip"]))
+        result = {"messages": [message("m2", 2)], "has_more": True}
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        messages, has_more = await MessageService(client, "https://example.test").history(
+            identity, "did:wba:example.test:user:bob", limit=1, skip=1
+        )
+    assert pages == [(1, 1)]
+    assert [item.message_id for item in messages] == ["m2"]
+    assert has_more is True
 
 
 @pytest.mark.asyncio

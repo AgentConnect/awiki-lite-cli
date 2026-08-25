@@ -11,10 +11,12 @@ import httpx
 import typer
 
 from awiki_lite_cli.application.groups import GroupWorkflow
+from awiki_lite_cli.commands._options import LIMIT_1_100, SINCE_SEQ_GE_0
 from awiki_lite_cli.config import Settings
 from awiki_lite_cli.domain.models import GroupMember, GroupMessage, GroupSummary
 from awiki_lite_cli.infrastructure.attachment_manifest import parse_manifest
 from awiki_lite_cli.infrastructure.group_service import GroupService
+from awiki_lite_cli.infrastructure.peer_resolver import resolve_peer_did
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
 from awiki_lite_cli.presentation import terminal_text
@@ -27,7 +29,9 @@ T = TypeVar("T")
 def create(name: Annotated[str, typer.Option("--name")]) -> None:
     """Create a private admin-add group."""
 
-    async def action(workflow: GroupWorkflow, store: SecureStateStore) -> GroupSummary:
+    async def action(
+        workflow: GroupWorkflow, store: SecureStateStore, _client: httpx.AsyncClient
+    ) -> GroupSummary:
         passphrase = typer.prompt("Local key passphrase", hide_input=True)
         return await workflow.create(store.unlock(passphrase), name)
 
@@ -37,11 +41,13 @@ def create(name: Annotated[str, typer.Option("--name")]) -> None:
 
 @app.command("list")
 def list_groups(
-    limit: int = typer.Option(50, min=1, max=100),
+    limit: int = typer.Option(50, parser=LIMIT_1_100),
     cursor: str | None = typer.Option(None, hidden=True),
 ) -> None:
     """List ordinary groups visible to the current identity."""
-    groups, next_cursor = _run(lambda workflow, _store: workflow.list_groups(limit, cursor))
+    groups, next_cursor = _run(
+        lambda workflow, _store, _client: workflow.list_groups(limit, cursor)
+    )
     _render_groups(groups)
     if next_cursor:
         typer.echo(f"Next cursor: {next_cursor}")
@@ -50,18 +56,20 @@ def list_groups(
 @app.command("get")
 def info(group_did: Annotated[str, typer.Option("--group")]) -> None:
     """Show one ordinary group's profile and current membership summary."""
-    group = _run(lambda workflow, _store: workflow.info(group_did))
+    group = _run(lambda workflow, _store, _client: workflow.info(group_did))
     _render_groups([group])
 
 
 @app.command("members")
 def members(
     group_did: Annotated[str, typer.Option("--group")],
-    limit: int = typer.Option(100, min=1, max=100),
+    limit: int = typer.Option(100, parser=LIMIT_1_100),
     cursor: str | None = typer.Option(None, hidden=True),
 ) -> None:
     """List active membership records for one group."""
-    rows, next_cursor = _run(lambda workflow, _store: workflow.members(group_did, limit, cursor))
+    rows, next_cursor = _run(
+        lambda workflow, _store, _client: workflow.members(group_did, limit, cursor)
+    )
     _render_members(rows)
     if next_cursor:
         typer.echo(f"Next cursor: {next_cursor}")
@@ -70,13 +78,22 @@ def members(
 @app.command("add")
 def add(
     group_did: Annotated[str, typer.Option("--group")],
-    member_did: Annotated[str, typer.Option("--member")],
+    member_did: Annotated[str, typer.Option("--member", help="Member DID or handle.")],
 ) -> None:
-    """Add one exact DID as a member."""
+    """Add one DID or handle as a member."""
+    settings = Settings.from_env()
 
-    async def action(workflow: GroupWorkflow, store: SecureStateStore) -> str:
+    async def action(
+        workflow: GroupWorkflow, store: SecureStateStore, client: httpx.AsyncClient
+    ) -> str:
+        member = await resolve_peer_did(
+            client,
+            member_did,
+            store.load_public().handle,
+            allow_private_network=settings.allow_private_network,
+        )
         passphrase = typer.prompt("Local key passphrase", hide_input=True)
-        return await workflow.add(store.unlock(passphrase), group_did, member_did)
+        return await workflow.add(store.unlock(passphrase), group_did, member)
 
     added = _run(action)
     typer.echo(f"Added {added} to {group_did}")
@@ -93,9 +110,14 @@ def send(
         raise typer.Exit(2)
     text_value = sys.stdin.read() if stdin else text
     if text_value is None:
-        text_value = typer.prompt("Message")
+        text_value = typer.prompt("Message", default="", show_default=False)
+    if not text_value or not text_value.strip():
+        typer.echo("Invalid input: message text must not be empty", err=True)
+        raise typer.Exit(2)
 
-    async def action(workflow: GroupWorkflow, store: SecureStateStore) -> GroupMessage:
+    async def action(
+        workflow: GroupWorkflow, store: SecureStateStore, _client: httpx.AsyncClient
+    ) -> GroupMessage:
         passphrase = typer.prompt("Local key passphrase", hide_input=True)
         return await workflow.send(store.unlock(passphrase), group_did, text_value)
 
@@ -106,30 +128,35 @@ def send(
 @app.command("messages")
 def messages(
     group_did: Annotated[str, typer.Option("--group")],
-    limit: int = typer.Option(50, min=1, max=100),
-    since_seq: int | None = typer.Option(None, "--since-seq", min=0, hidden=True),
+    limit: int = typer.Option(50, parser=LIMIT_1_100),
+    since_seq: int | None = typer.Option(None, "--since-seq", parser=SINCE_SEQ_GE_0, hidden=True),
 ) -> None:
     """Read ordinary Group Base messages after an optional group-local sequence."""
     rows, next_since_seq = _run(
-        lambda workflow, _store: workflow.messages(group_did, limit, since_seq)
+        lambda workflow, _store, _client: workflow.messages(group_did, limit, since_seq)
     )
     _render_messages(rows)
     if next_since_seq is not None:
         typer.echo(f"Next since-seq: {next_since_seq}")
 
 
-def _run(action: Callable[[GroupWorkflow, SecureStateStore], Awaitable[T]]) -> T:
+def _run(
+    action: Callable[[GroupWorkflow, SecureStateStore, httpx.AsyncClient], Awaitable[T]],
+) -> T:
     settings = Settings.from_env()
     store = SecureStateStore(settings.state_dir)
 
     async def invoke() -> T:
         async with httpx.AsyncClient(
-            timeout=20.0, trust_env=False, follow_redirects=False
+            timeout=20.0,
+            trust_env=False,
+            follow_redirects=False,
+            verify=settings.tls_context(),
         ) as client:
             workflow = GroupWorkflow(
                 GroupService(client, settings.message_service_url), store, parse_manifest
             )
-            return await action(workflow, store)
+            return await action(workflow, store, client)
 
     try:
         return asyncio.run(invoke())

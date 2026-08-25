@@ -11,10 +11,13 @@ from anp.authentication import generate_http_signature_headers  # type: ignore[i
 from awiki_lite_cli import CLIENT_IDENTIFIER
 from awiki_lite_cli.domain.models import IdentityState
 from awiki_lite_cli.infrastructure.rpc import (
+    JsonRpcFailure,
     call_json_rpc,
     decode_json_rpc_response,
     encode_json_rpc_request,
 )
+
+OTP_REASON = "email_or_phone_verification_is_not_part_of_open_server_mvp"
 
 
 class UserService:
@@ -23,47 +26,76 @@ class UserService:
         self.base_url = base_url.rstrip("/")
 
     async def validate_handle(self, handle: str, domain: str) -> dict[str, Any]:
-        result = await call_json_rpc(
-            self.client,
-            self.base_url + "/user-service/handle/rpc",
-            "validate",
-            {"handle": handle, "domain": domain},
-        )
+        try:
+            result = await call_json_rpc(
+                self.client,
+                self.base_url + "/user-service/v1/handle/rpc",
+                "validate",
+                {"handle": handle, "domain": domain},
+            )
+        except JsonRpcFailure as exc:
+            if exc.code == -32601 and exc.message == "method_not_found":
+                return {"available": True, "validation_deferred": True}
+            raise
         return _object(result)
 
-    async def send_registration_otp(self, handle: str, domain: str, phone: str) -> None:
-        await call_json_rpc(
-            self.client,
-            self.base_url + "/user-service/handle/rpc",
-            "send_otp",
-            {
-                "phone": phone,
-                "purpose": "awiki.identity.register.v1",
-                "handle": handle,
-                "domain": domain,
-                "full_handle": f"{handle}.{domain}",
-            },
-        )
+    async def send_registration_otp(self, handle: str, domain: str, phone: str) -> bool:
+        try:
+            await call_json_rpc(
+                self.client,
+                self.base_url + "/user-service/v1/handle/rpc",
+                "send_otp",
+                {
+                    "phone": phone,
+                    "purpose": "awiki.identity.register.v1",
+                    "handle": handle,
+                    "domain": domain,
+                    "full_handle": f"{handle}.{domain}",
+                },
+            )
+        except JsonRpcFailure as exc:
+            data = exc.data if isinstance(exc.data, dict) else {}
+            if (
+                exc.code == -32010
+                and data.get("feature") == "contact_verification"
+                and data.get("reason") == OTP_REASON
+            ):
+                return False
+            raise
+        return True
 
     async def register(
         self, did_document: dict[str, Any], handle: str, phone: str, otp_code: str
     ) -> dict[str, Any]:
-        result = await call_json_rpc(
-            self.client,
-            self.base_url + "/user-service/did-auth/rpc",
-            "register",
-            {
-                "did_document": did_document,
-                "handle": handle,
-                "phone": phone,
-                "otp_code": otp_code,
+        endpoint = self.base_url + "/user-service/v1/did-auth/rpc"
+        request_id = str(uuid4())
+        response = await self.client.post(
+            endpoint,
+            headers={
+                "Content-Type": "application/json",
+                "X-AWiki-Client-Version": CLIENT_IDENTIFIER,
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "register",
+                "params": {
+                    "did_document": did_document,
+                    "handle": handle,
+                    "phone": phone,
+                    "otp_code": otp_code,
+                },
             },
         )
-        return _object(result)
+        result = _object(decode_json_rpc_response(response, request_id))
+        token = _bearer_token(response.headers.get("Authorization"))
+        if token and not result.get("access_token"):
+            result = {**result, "access_token": token}
+        return result
 
     async def refresh_session(self, identity: IdentityState, signing_key: Any) -> str:
         """Obtain a bearer token with DID HTTP signatures, not the old bearer token."""
-        endpoint = self.base_url + "/user-service/did-auth/rpc"
+        endpoint = self.base_url + "/user-service/v1/did-auth/rpc"
         request_id = str(uuid4())
         body = encode_json_rpc_request(request_id, "get_me", {})
         headers = {
@@ -85,12 +117,9 @@ class UserService:
                 keyid=identity.verification_method,
             )
         )
-        result = _object(
-            decode_json_rpc_response(
-                await self.client.post(endpoint, headers=headers, content=body), request_id
-            )
-        )
-        token = result.get("access_token")
+        response = await self.client.post(endpoint, headers=headers, content=body)
+        result = _object(decode_json_rpc_response(response, request_id))
+        token = result.get("access_token") or _bearer_token(response.headers.get("Authorization"))
         if not isinstance(token, str) or not token.strip():
             raise RuntimeError("DID authentication returned no access token")
         if result.get("did") is not None and result.get("did") != identity.did:
@@ -102,3 +131,10 @@ def _object(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError("service returned an invalid result")
     return value
+
+
+def _bearer_token(value: str | None) -> str | None:
+    if value is None or not value.lower().startswith("bearer "):
+        return None
+    token = value[7:].strip()
+    return token or None

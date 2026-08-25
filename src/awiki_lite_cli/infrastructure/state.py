@@ -25,12 +25,15 @@ from awiki_lite_cli.domain.models import (
     PendingOperation,
     PendingSend,
     SessionState,
+    SyncBootstrapState,
+    SyncInstallationState,
     UnlockedIdentity,
 )
 
 PENDING_SCHEMA_VERSION = 2
 ATTACHMENT_CONTEXT_SCHEMA_VERSION = 1
 MAX_ATTACHMENT_CONTEXTS = 500
+SYNC_INSTALLATION_SCHEMA_VERSION = 1
 
 
 class StateError(RuntimeError):
@@ -184,6 +187,51 @@ class SecureStateStore:
                 raise IdentityMissingError("local identity is not registered")
             self._atomic_json(self.root / "session.json", {"access_token": access_token})
 
+    def initialize_sync(self, identity_did: str) -> SyncInstallationState:
+        """Create the stable opaque ID used for retry-safe Sync V2 bootstrap."""
+        if not identity_did.strip():
+            raise StateError("sync identity is invalid")
+        path = self.root / "sync-installation.json"
+        with self.lock():
+            existing = self._load_sync_unlocked(path)
+            if existing is not None:
+                if existing.identity_did != identity_did:
+                    raise StateError("sync installation belongs to another identity")
+                return existing
+            state = SyncInstallationState(
+                identity_did=identity_did,
+                client_instance_id=f"lite-installation-{secrets.token_urlsafe(24)}",
+            )
+            self._atomic_json(path, self._sync_json(state))
+            return state
+
+    def load_sync(self, identity_did: str) -> SyncInstallationState | None:
+        path = self.root / "sync-installation.json"
+        state = self._load_sync_unlocked(path)
+        if state is not None and state.identity_did != identity_did:
+            raise StateError("sync installation belongs to another identity")
+        return state
+
+    def complete_sync_bootstrap(
+        self, installation: SyncInstallationState, bootstrap: SyncBootstrapState
+    ) -> SyncInstallationState:
+        path = self.root / "sync-installation.json"
+        with self.lock():
+            current = self._load_sync_unlocked(path)
+            if (
+                current is None
+                or current.identity_did != installation.identity_did
+                or current.client_instance_id != installation.client_instance_id
+            ):
+                raise StateError("sync installation changed unexpectedly")
+            completed = SyncInstallationState(
+                identity_did=current.identity_did,
+                client_instance_id=current.client_instance_id,
+                bootstrap=bootstrap,
+            )
+            self._atomic_json(path, self._sync_json(completed))
+            return completed
+
     def load_device_signing_key(self, passphrase: str) -> Any:
         """Unlock the registered device signing key without requiring a live session."""
         self.load_public()
@@ -223,6 +271,7 @@ class SecureStateStore:
         return self._load_keys(passphrase)
 
     def _load_keys(self, passphrase: str) -> tuple[Any, Any, Any]:
+        self._validate_passphrase(passphrase)
         try:
             keys = [
                 serialization.load_pem_private_key(
@@ -541,6 +590,67 @@ class SecureStateStore:
             raise StateError("attachment context index is invalid")
         return [self._parse_attachment_context(value) for value in raw_contexts]
 
+    def _load_sync_unlocked(self, path: Path) -> SyncInstallationState | None:
+        if not path.exists() and not path.is_symlink():
+            return None
+        data = self._read_json(path)
+        if data.get("schema_version") != SYNC_INSTALLATION_SCHEMA_VERSION:
+            raise StateError("sync installation schema is unsupported")
+        try:
+            identity_did = data["identity_did"]
+            client_instance_id = data["client_instance_id"]
+            raw_bootstrap = data.get("bootstrap")
+            if not isinstance(identity_did, str) or not identity_did:
+                raise TypeError
+            if not isinstance(client_instance_id, str) or not client_instance_id:
+                raise TypeError
+            bootstrap = None
+            if raw_bootstrap is not None:
+                if not isinstance(raw_bootstrap, dict):
+                    raise TypeError
+                values = [
+                    raw_bootstrap.get("account_id"),
+                    raw_bootstrap.get("device_id"),
+                    raw_bootstrap.get("server_time"),
+                    raw_bootstrap.get("stream_epoch"),
+                    raw_bootstrap.get("scan_seq"),
+                ]
+                if not all(isinstance(value, str) and value for value in values):
+                    raise TypeError
+                stream_epoch = values[3]
+                scan_seq = values[4]
+                assert isinstance(stream_epoch, str) and isinstance(scan_seq, str)
+                if (
+                    not stream_epoch.isdecimal()
+                    or int(stream_epoch) < 1
+                    or not scan_seq.isdecimal()
+                ):
+                    raise TypeError
+                bootstrap = SyncBootstrapState(*cast(list[str], values))
+            return SyncInstallationState(identity_did, client_instance_id, bootstrap)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise StateError("sync installation state is invalid") from exc
+
+    @staticmethod
+    def _sync_json(state: SyncInstallationState) -> dict[str, Any]:
+        bootstrap = state.bootstrap
+        return {
+            "schema_version": SYNC_INSTALLATION_SCHEMA_VERSION,
+            "identity_did": state.identity_did,
+            "client_instance_id": state.client_instance_id,
+            "bootstrap": (
+                {
+                    "account_id": bootstrap.account_id,
+                    "device_id": bootstrap.device_id,
+                    "server_time": bootstrap.server_time,
+                    "stream_epoch": bootstrap.stream_epoch,
+                    "scan_seq": bootstrap.scan_seq,
+                }
+                if bootstrap is not None
+                else None
+            ),
+        }
+
     @staticmethod
     def _attachment_context_json(context: AttachmentContext) -> dict[str, Any]:
         attachment = context.attachment
@@ -607,7 +717,7 @@ class SecureStateStore:
     @staticmethod
     def _validate_passphrase(passphrase: str) -> None:
         if len(passphrase) < 12 or not passphrase.strip():
-            raise StateError("passphrase must contain at least 12 characters")
+            raise ValueError("passphrase must contain at least 12 characters")
 
     def _ensure_directory(self, path: Path) -> None:
         if path.exists():

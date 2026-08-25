@@ -1,0 +1,26 @@
+{
+  "tree": {
+    "": ["id", "msg", "group", "runtime"],
+    "id": ["register", "init-sync", "refresh-token"],
+    "msg": ["send", "inbox", "history", "attachment"],
+    "msg attachment": ["download"],
+    "group": ["create", "list", "get", "members", "add", "messages"],
+    "runtime": ["listener"],
+    "runtime listener": ["run", "install", "uninstall", "status", "start", "stop", "restart"]
+  },
+  "options": {
+    "id register": ["--handle", "--phone"],
+    "msg send": ["--to", "--group", "--text", "--file"],
+    "msg inbox": ["--limit", "--mark-read"],
+    "msg history": ["--with", "--limit"],
+    "msg attachment download": ["--message-id", "--attachment-id", "--output"],
+    "group create": ["--name"],
+    "group list": ["--limit"],
+    "group get": ["--group"],
+    "group members": ["--group", "--limit"],
+    "group add": ["--group", "--member"],
+    "group messages": ["--group", "--limit"],
+    "runtime listener run": ["--once", "--json"],
+    "runtime listener status": ["--json"]
+  }
+}

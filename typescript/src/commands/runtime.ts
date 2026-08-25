@@ -1,34 +1,85 @@
-import { basename } from 'node:path';
+import password from "@inquirer/password";
 
-import password from '@inquirer/password';
+import {
+  InvalidInputError,
+  JsonRpcFailure,
+  SessionExpiredError,
+  StateError,
+} from "../application/errors.js";
+import { requireReadableCaBundle, settingsFromEnv } from "../config.js";
+import { createHttpClient } from "../infrastructure/rpc.js";
+import { SecureStateStore } from "../infrastructure/state.js";
 
-import { InvalidInputError, JsonRpcFailure, SessionExpiredError, StateError } from '../application/errors.js';
-import { settingsFromEnv } from '../config.js';
-import { createHttpClient } from '../infrastructure/rpc.js';
-import { SecureStateStore } from '../infrastructure/state.js';
-
-export async function promptPassphrase(message = 'Local key passphrase', confirm = false): Promise<string> {
+export async function promptPassphrase(
+  message = "Local key passphrase",
+  confirm = false,
+): Promise<string> {
   if (!process.stdin.isTTY) {
-    throw new InvalidInputError('a TTY is required to enter the passphrase');
+    throw new InvalidInputError("a TTY is required to enter the passphrase");
   }
-  const first = await password({ message, mask: '*' });
+  const first = await password({ message, mask: "*" });
   if (confirm) {
-    const second = await password({ message: 'Confirm passphrase', mask: '*' });
+    const second = await password({ message: "Confirm passphrase", mask: "*" });
     if (first !== second) {
-      throw new InvalidInputError('passphrases do not match');
+      throw new InvalidInputError("passphrases do not match");
     }
   }
   return first;
 }
 
+export async function promptText(message: string): Promise<string> {
+  const { createInterface } = await import("node:readline/promises");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await rl.question(`${message}: `);
+  } finally {
+    rl.close();
+  }
+}
+
+export function requireInteger(
+  value: number,
+  field: string,
+  minimum: number,
+  maximum?: number,
+): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < minimum ||
+    (maximum !== undefined && value > maximum)
+  ) {
+    const range =
+      maximum === undefined
+        ? `at least ${minimum}`
+        : `between ${minimum} and ${maximum}`;
+    throw new InvalidInputError(`${field} must be an integer ${range}`);
+  }
+  return value;
+}
+
+export function requireNonemptyText(value: string): string {
+  if (!value.trim()) {
+    throw new InvalidInputError("message text must not be empty");
+  }
+  return value;
+}
+
 export function createRuntime(
-  overrides: { stateDir?: string; messageServiceUrl?: string; env?: NodeJS.ProcessEnv } = {},
+  overrides: {
+    stateDir?: string;
+    messageServiceUrl?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {},
 ) {
   const settings = settingsFromEnv(overrides.env);
   const stateDir = overrides.stateDir ?? settings.stateDir;
-  const messageServiceUrl = overrides.messageServiceUrl ?? settings.messageServiceUrl;
+  const messageServiceUrl =
+    overrides.messageServiceUrl ?? settings.messageServiceUrl;
   const store = new SecureStateStore(stateDir);
-  const http = createHttpClient({ caBundle: settings.caBundle, timeoutMs: 20_000 });
+  const http = createHttpClient({
+    caBundle: requireReadableCaBundle(settings.caBundle),
+    timeoutMs: 20_000,
+  });
   return {
     settings: { ...settings, stateDir, messageServiceUrl },
     store,
@@ -36,46 +87,64 @@ export function createRuntime(
   };
 }
 
-export function mapError(error: unknown, kind: 'registration' | 'session' | 'messaging' | 'group' | 'attachment' | 'listener'): never {
-  const argv0 = basename(process.argv[1] ?? 'awiki-lite-ts');
+export function mapError(
+  error: unknown,
+  kind:
+    | "registration"
+    | "session"
+    | "sync"
+    | "messaging"
+    | "group"
+    | "attachment"
+    | "listener",
+): never {
+  const argv0 = "awiki-lite-ts";
   if (error instanceof InvalidInputError) {
     console.error(`Invalid input: ${error.message}`);
     process.exit(2);
   }
   if (error instanceof JsonRpcFailure) {
-    if (error.code === 401 || error.code === 1401 || error.message.toLowerCase().includes('unauthorized')) {
-      console.error(`Session expired; run \`${argv0} session refresh\`.`);
+    if (
+      error.code === 401 ||
+      error.code === 1401 ||
+      error.rpcMessage.toLowerCase().includes("unauthorized")
+    ) {
+      console.error(`Session expired; run \`${argv0} id refresh-token\`.`);
       process.exit(1);
     }
-    const service =
-      kind === 'registration'
-        ? 'Registration service'
-        : kind === 'session'
-          ? 'Session refresh'
-          : kind === 'group'
-            ? 'Group service'
-            : kind === 'attachment'
-              ? 'Attachment service'
-              : 'Message service';
-    console.error(`${service} rejected the request (JSON-RPC code ${error.code}).`);
+    const rejected =
+      kind === "registration"
+        ? `Registration service rejected the request (JSON-RPC code ${error.code}).`
+        : kind === "session"
+          ? `Session refresh was rejected (JSON-RPC code ${error.code}).`
+          : kind === "sync"
+            ? `Message sync initialization was rejected (JSON-RPC code ${error.code}).`
+            : kind === "group"
+              ? `Group service rejected the request (JSON-RPC code ${error.code}).`
+              : kind === "attachment"
+                ? `Attachment operation was rejected (JSON-RPC code ${error.code}).`
+                : `Message service rejected the request (JSON-RPC code ${error.code}).`;
+    console.error(rejected);
     process.exit(1);
   }
   if (error instanceof SessionExpiredError) {
-    console.error(`Session expired; run \`${argv0} session refresh\`.`);
+    console.error(`Session expired; run \`${argv0} id refresh-token\`.`);
     process.exit(1);
   }
   const label =
-    kind === 'registration'
-      ? 'Registration failed'
-      : kind === 'session'
-        ? 'Session refresh failed'
-        : kind === 'group'
-          ? 'Group command failed'
-          : kind === 'attachment'
-            ? 'Attachment command failed'
-            : kind === 'listener'
-              ? 'Listener failed'
-              : 'Messaging failed';
+    kind === "registration"
+      ? "Registration failed"
+      : kind === "session"
+        ? "Session refresh failed"
+        : kind === "sync"
+          ? "Message sync initialization failed"
+          : kind === "group"
+            ? "Group command failed"
+            : kind === "attachment"
+              ? "Attachment command failed"
+              : kind === "listener"
+                ? "Listener failed"
+                : "Messaging failed";
   const message = error instanceof Error ? error.message : String(error);
   if (error instanceof StateError || error instanceof Error) {
     console.error(`${label}: ${message}`);
@@ -85,6 +154,9 @@ export function mapError(error: unknown, kind: 'registration' | 'session' | 'mes
   process.exit(1);
 }
 
-export function wrapMain(kind: Parameters<typeof mapError>[1], fn: () => Promise<void>): void {
+export function wrapMain(
+  kind: Parameters<typeof mapError>[1],
+  fn: () => Promise<void>,
+): void {
   fn().catch((error) => mapError(error, kind));
 }

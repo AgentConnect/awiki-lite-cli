@@ -22,17 +22,16 @@ from awiki_lite_cli.infrastructure.attachment_service import (
 )
 from awiki_lite_cli.infrastructure.group_service import GroupService
 from awiki_lite_cli.infrastructure.message_service import MessageService
+from awiki_lite_cli.infrastructure.peer_resolver import resolve_peer_did
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
 
-app = typer.Typer(help="Send and download one plain transport-protected attachment.")
 T = TypeVar("T")
 
 
-@app.command("send")
 def send(
     file: Path,
-    recipient_did: str | None = typer.Option(None, "--to"),
+    recipient_did: str | None = typer.Option(None, "--to", help="Direct peer DID or handle."),
     group_did: str | None = typer.Option(None, "--group"),
     caption: str | None = typer.Option(None, "--caption"),
     caption_stdin: bool = typer.Option(
@@ -52,7 +51,6 @@ def send(
     typer.echo(f"Sent attachment {attachment_id} in message {message_id}")
 
 
-@app.command("download")
 def download(
     message_id: Annotated[str, typer.Option("--message-id")],
     attachment_id: Annotated[str, typer.Option("--attachment-id")],
@@ -75,10 +73,28 @@ def _run_send(
 
     async def invoke() -> tuple[str, str]:
         async with httpx.AsyncClient(
-            timeout=20.0, trust_env=False, follow_redirects=False
+            timeout=20.0,
+            trust_env=False,
+            follow_redirects=False,
+            verify=settings.tls_context(),
         ) as client:
+            identity = store.unlock(passphrase)
+            resolved_recipient = (
+                await resolve_peer_did(
+                    client,
+                    recipient_did,
+                    identity.identity.handle,
+                    allow_private_network=settings.allow_private_network,
+                )
+                if recipient_did is not None
+                else None
+            )
             workflow = AttachmentWorkflow(
-                AttachmentService(client, settings.message_service_url),
+                AttachmentService(
+                    client,
+                    settings.message_service_url,
+                    allow_private_network=settings.allow_private_network,
+                ),
                 MessageService(client, settings.message_service_url),
                 GroupService(client, settings.message_service_url),
                 store,
@@ -87,9 +103,9 @@ def _run_send(
                 prepare_download_destination,
             )
             return await workflow.send(
-                store.unlock(passphrase),
+                identity,
                 file,
-                recipient_did=recipient_did,
+                recipient_did=resolved_recipient,
                 group_did=group_did,
                 caption=caption,
             )
@@ -103,10 +119,17 @@ def _run_download(message_id: str, attachment_id: str, output: Path) -> Path:
 
     async def invoke() -> Path:
         async with httpx.AsyncClient(
-            timeout=20.0, trust_env=False, follow_redirects=False
+            timeout=20.0,
+            trust_env=False,
+            follow_redirects=False,
+            verify=settings.tls_context(),
         ) as client:
             workflow = AttachmentWorkflow(
-                AttachmentService(client, settings.message_service_url),
+                AttachmentService(
+                    client,
+                    settings.message_service_url,
+                    allow_private_network=settings.allow_private_network,
+                ),
                 MessageService(client, settings.message_service_url),
                 GroupService(client, settings.message_service_url),
                 store,

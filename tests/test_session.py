@@ -48,10 +48,12 @@ async def test_expired_session_refresh_preserves_did_and_private_key(tmp_path: P
         assert "content-digest" in request.headers
         return httpx.Response(
             200,
+            headers={"Authorization": "Bearer fresh-token"},
             json={
                 "jsonrpc": "2.0",
                 "id": body["id"],
-                "result": {"did": identity.did, "access_token": "fresh-token"},
+                "result": {"did": identity.did},
+                "error": None,
             },
         )
 

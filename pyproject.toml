@@ -37,6 +37,10 @@ packages = ["src/awiki_lite_cli"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = ["-m", "not repo_contract"]
+markers = [
+    "repo_contract: validates repository-wide dual-language configuration",
+]
 
 [tool.ruff]
 target-version = "py310"

@@ -8,11 +8,13 @@ from uuid import uuid4
 
 import httpx
 
+from awiki_lite_cli.application.errors import SyncRecoveryRequiredError
 from awiki_lite_cli.domain.models import (
     AttachmentRef,
     AuthenticatedIdentity,
     ChatMessage,
     PendingOperation,
+    SyncBootstrapState,
     UnlockedIdentity,
 )
 from awiki_lite_cli.infrastructure.anp_sdk import generate_origin_proof
@@ -107,14 +109,14 @@ def build_direct_attachment_send(
     return {"meta": meta, "auth": {"scheme": ORIGIN_SCHEME, "origin_proof": proof}, "body": body}
 
 
-def build_inbox(did: str, limit: int, skip: int = 0) -> dict[str, Any]:
-    return _local_params("anp.inbox.local.v1", did, {"user_did": did, "limit": limit, "skip": skip})
-
-
 def build_mark_read(did: str, message_ids: list[str]) -> dict[str, Any]:
     if not message_ids or any(not value for value in message_ids):
         raise ValueError("message_ids must not be empty")
     return _local_params("anp.inbox.local.v1", did, {"user_did": did, "message_ids": message_ids})
+
+
+def build_inbox(did: str, limit: int, skip: int = 0) -> dict[str, Any]:
+    return _local_params("anp.inbox.local.v1", did, {"user_did": did, "limit": limit, "skip": skip})
 
 
 def build_history(did: str, peer_did: str, limit: int, skip: int = 0) -> dict[str, Any]:
@@ -135,6 +137,27 @@ def build_capabilities(did: str) -> dict[str, Any]:
             "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         },
         "body": {},
+    }
+
+
+def build_sync_bootstrap(did: str, client_instance_id: str) -> dict[str, Any]:
+    if not client_instance_id.strip():
+        raise ValueError("client_instance_id must not be empty")
+    return {
+        "meta": {
+            "profile": "anp.sync.local.v2",
+            "security_profile": "transport-protected",
+            "sender_did": did,
+            "operation_id": f"op-{uuid4()}",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        },
+        "body": {
+            "client_instance_id": client_instance_id,
+            "capabilities": {
+                "sync_profile": "anp.sync.local.v2",
+                "event_schema_max": 1,
+            },
+        },
     }
 
 
@@ -176,8 +199,54 @@ class MessageService:
             if not isinstance(advertised, list) or required not in advertised:
                 raise RuntimeError(f"message service does not advertise required {required}")
         policies = result.get("proof_policies")
-        if not isinstance(policies, dict) or policies.get("direct_base_origin_proof") != "required":
+        if not isinstance(policies, dict) or policies.get("direct_base_origin_proof") not in {
+            "required",
+            "required_for_canonical_local_and_cross_domain",
+        }:
             raise RuntimeError("message service does not advertise the required Direct Base proof")
+
+    async def bootstrap_sync(
+        self,
+        identity: AuthenticatedIdentity | UnlockedIdentity,
+        client_instance_id: str,
+    ) -> SyncBootstrapState:
+        value = _object(
+            await call_json_rpc(
+                self.client,
+                self.endpoint,
+                "sync.bootstrap",
+                build_sync_bootstrap(identity.identity.did, client_instance_id),
+                access_token=identity.session.access_token,
+            )
+        )
+        mode = value.get("mode")
+        if mode == "compact_recovery_required":
+            raise SyncRecoveryRequiredError(
+                "this identity requires full sync recovery, which Lite CLI does not support; "
+                "use the full AWiki CLI to recover existing history"
+            )
+        if mode != "tail_only":
+            raise ProtocolResponseError("service returned an invalid sync bootstrap mode")
+        cursor = _object(value.get("cursor"))
+        stream_epoch = _required_str(cursor, "stream_epoch")
+        scan_seq = _required_str(cursor, "scan_seq", allow_empty=False)
+        if not stream_epoch.isdecimal() or int(stream_epoch) < 1 or not scan_seq.isdecimal():
+            raise ProtocolResponseError("service returned an invalid sync bootstrap cursor")
+        for field in ("read_state_baseline", "group_state_baseline", "warnings"):
+            if not isinstance(value.get(field), list):
+                raise ProtocolResponseError(f"service returned an invalid {field}")
+        if any(not isinstance(item, str) for item in value["warnings"]):
+            raise ProtocolResponseError("service returned invalid sync bootstrap warnings")
+        bootstrap = SyncBootstrapState(
+            account_id=_required_str(value, "account_id"),
+            device_id=_required_str(value, "device_id"),
+            server_time=_required_str(value, "server_time"),
+            stream_epoch=stream_epoch,
+            scan_seq=scan_seq,
+        )
+        if bootstrap.device_id != identity.identity.device_id:
+            raise ProtocolResponseError("sync bootstrap returned another device")
+        return bootstrap
 
     async def send(
         self,
@@ -222,7 +291,12 @@ class MessageService:
         value = _object(result)
         meta = params["meta"]
         required = {"accepted", "message_id", "operation_id", "target_did", "accepted_at"}
-        if not required.issubset(value) or value["accepted"] is not True:
+        if (
+            not required.issubset(value)
+            or value["accepted"] is not True
+            or not isinstance(value["accepted_at"], str)
+            or not value["accepted_at"]
+        ):
             raise RuntimeError("service returned an invalid direct.send result")
         if (
             value["message_id"] != meta["message_id"]
@@ -235,7 +309,7 @@ class MessageService:
             identity.identity.did,
             recipient,
             text,
-            str(value["accepted_at"]),
+            value["accepted_at"],
         )
 
     async def send_attachment(
@@ -279,7 +353,12 @@ class MessageService:
         value = _object(result)
         meta = params["meta"]
         required = {"accepted", "message_id", "operation_id", "target_did", "accepted_at"}
-        if not required.issubset(value) or value["accepted"] is not True:
+        if (
+            not required.issubset(value)
+            or value["accepted"] is not True
+            or not isinstance(value["accepted_at"], str)
+            or not value["accepted_at"]
+        ):
             raise RuntimeError("service returned an invalid direct.send result")
         if (
             value["message_id"] != meta["message_id"]
@@ -292,15 +371,18 @@ class MessageService:
     async def inbox(
         self, identity: AuthenticatedIdentity | UnlockedIdentity, limit: int, skip: int = 0
     ) -> tuple[list[ChatMessage], bool]:
-        result = await call_json_rpc(
-            self.client,
-            self.endpoint,
-            "inbox.get",
-            build_inbox(identity.identity.did, limit, skip),
-            access_token=identity.session.access_token,
+        page = _object(
+            await call_json_rpc(
+                self.client,
+                self.endpoint,
+                "inbox.get",
+                build_inbox(identity.identity.did, limit, skip),
+                access_token=identity.session.access_token,
+            )
         )
-        page = _object(result)
-        return _parse_page(page), _required_bool(page, "has_more", default=False)
+        return _parse_page(page, identity.identity.did), _required_bool(
+            page, "has_more", default=False
+        )
 
     async def mark_read(
         self, identity: AuthenticatedIdentity | UnlockedIdentity, ids: list[str]
@@ -325,33 +407,35 @@ class MessageService:
         limit: int,
         skip: int = 0,
     ) -> tuple[list[ChatMessage], bool]:
-        result = await call_json_rpc(
-            self.client,
-            self.endpoint,
-            "direct.get_history",
-            build_history(identity.identity.did, peer, limit, skip),
-            access_token=identity.session.access_token,
+        page = _object(
+            await call_json_rpc(
+                self.client,
+                self.endpoint,
+                "direct.get_history",
+                build_history(identity.identity.did, peer, limit, skip),
+                access_token=identity.session.access_token,
+            )
         )
-        page = _object(result)
-        return _parse_page(page), _required_bool(page, "has_more", default=False)
+        return _parse_page(page, identity.identity.did), _required_bool(
+            page, "has_more", default=False
+        )
 
 
-def _parse_page(page: dict[str, Any]) -> list[ChatMessage]:
+def _parse_page(page: dict[str, Any], fallback_target: str | None = None) -> list[ChatMessage]:
     messages = page.get("messages")
     if not isinstance(messages, list):
         raise RuntimeError("service returned an invalid message page")
     output: list[ChatMessage] = []
     for item in messages:
         row = _object(item)
-        if row.get("type") == "attachment_manifest":
-            if row.get("content_type") != MANIFEST_CONTENT_TYPE:
-                raise RuntimeError("service returned an invalid attachment projection")
-            attachment, caption = parse_manifest(row.get("content"))
+        content_type = row.get("content_type")
+        if content_type == MANIFEST_CONTENT_TYPE:
+            attachment, caption = parse_manifest(row.get("content", row.get("payload")))
             output.append(
                 ChatMessage(
-                    _required_str(row, "id"),
+                    _message_id(row),
                     _response_did(row, "sender_did"),
-                    _response_did(row, "receiver_did"),
+                    _message_target(row, fallback_target),
                     "",
                     _optional_timestamp(row),
                     _required_bool(row, "is_read", default=False),
@@ -360,14 +444,14 @@ def _parse_page(page: dict[str, Any]) -> list[ChatMessage]:
                 )
             )
             continue
-        if row.get("content_type") != "text/plain" or row.get("type") != "text":
+        if content_type != "text/plain":
             continue
         output.append(
             ChatMessage(
-                _required_str(row, "id"),
+                _message_id(row),
                 _response_did(row, "sender_did"),
-                _response_did(row, "receiver_did"),
-                _required_str(row, "content", allow_empty=True),
+                _message_target(row, fallback_target),
+                _message_text(row),
                 _optional_timestamp(row),
                 _required_bool(row, "is_read", default=False),
             )
@@ -407,3 +491,30 @@ def _response_did(value: dict[str, Any], field: str) -> str:
         return validate_did(_required_str(value, field))
     except ValueError as exc:
         raise ProtocolResponseError(f"service returned an invalid {field}") from exc
+
+
+def _message_id(value: dict[str, Any]) -> str:
+    for field in ("id", "message_id"):
+        result = value.get(field)
+        if isinstance(result, str) and result:
+            return result
+    raise ProtocolResponseError("service returned an invalid message id")
+
+
+def _message_target(value: dict[str, Any], fallback: str | None) -> str:
+    for field in ("receiver_did", "target_did"):
+        if field in value:
+            return _response_did(value, field)
+    if fallback is None:
+        raise ProtocolResponseError("service returned an invalid receiver_did")
+    try:
+        return validate_did(fallback)
+    except ValueError as exc:  # pragma: no cover - local identity is validated on registration
+        raise ProtocolResponseError("service returned an invalid receiver_did") from exc
+
+
+def _message_text(value: dict[str, Any]) -> str:
+    for field in ("content", "text"):
+        if field in value:
+            return _required_str(value, field, allow_empty=True)
+    raise ProtocolResponseError("service returned invalid message content")

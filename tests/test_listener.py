@@ -57,12 +57,23 @@ def test_parse_sync_changed_returns_closed_projection() -> None:
     assert json.loads(event.to_json())["event"] == "sync.changed"
 
 
+def test_parse_sync_changed_accepts_params_projection() -> None:
+    value = json.loads(notification())
+    value["params"] = value.pop("payload")
+
+    event = parse_sync_changed(json.dumps(value))
+
+    assert event.domains == ("message", "group")
+    assert event.reason == "message_available"
+
+
 @pytest.mark.parametrize(
     "value",
     [
         "not json",
         '{"method":"direct.incoming"}',
         '{"method":"sync.changed","payload":{},"sync":{}}',
+        '{"method":"sync.changed","payload":{},"params":{},"sync":{}}',
         json.dumps(
             {
                 "method": "sync.changed",
