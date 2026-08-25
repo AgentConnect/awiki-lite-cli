@@ -59,8 +59,8 @@ export function registerGroupCommand(root: Command): void {
             options.limit,
             options.cursor ?? null,
           );
-          for (const item of rows) {
-            console.log(`${item.displayName}: ${item.groupDid}`);
+          for (const line of renderGroups(rows)) {
+            console.log(line);
           }
           if (next) {
             console.log(`Next cursor: ${next}`);
@@ -82,7 +82,9 @@ export function registerGroupCommand(root: Command): void {
             store,
           );
           const item = await workflow.info(options.group);
-          console.log(`${item.displayName}: ${item.groupDid}`);
+          for (const line of renderGroups([item])) {
+            console.log(line);
+          }
         } finally {
           http.close();
         }
@@ -107,8 +109,8 @@ export function registerGroupCommand(root: Command): void {
             options.limit,
             options.cursor ?? null,
           );
-          for (const item of rows) {
-            console.log(`${item.agentDid} ${item.role} ${item.status}`);
+          for (const line of renderMembers(rows)) {
+            console.log(line);
           }
           if (next) {
             console.log(`Next cursor: ${next}`);
@@ -236,4 +238,37 @@ export async function sendGroupMessage(
   } finally {
     http.close();
   }
+}
+
+export function renderGroups(
+  groups: Array<{
+    displayName: string;
+    groupDid: string;
+    memberCount: number;
+    myRole: string | null;
+  }>,
+): string[] {
+  if (!groups.length) {
+    return ["No ordinary groups."];
+  }
+  return groups.map((group) => {
+    const role = group.myRole ? ` role=${group.myRole}` : "";
+    return (
+      `${terminalText(group.displayName)} (${terminalText(group.groupDid)}) ` +
+      `members=${group.memberCount}${terminalText(role)}`
+    );
+  });
+}
+
+export function renderMembers(
+  members: Array<{ agentDid: string; role: string; status: string }>,
+): string[] {
+  if (!members.length) {
+    return ["No group members."];
+  }
+  return members.map(
+    (member) =>
+      `${terminalText(member.agentDid)} role=${terminalText(member.role)} ` +
+      `status=${terminalText(member.status)}`,
+  );
 }

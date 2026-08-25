@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 
-import { JsonRpcFailure } from "./errors.js";
+import { InvalidInputError, JsonRpcFailure } from "./errors.js";
+import { isRetryableTransportError } from "../infrastructure/rpc.js";
 import { validateWbaDid } from "../domain/validation.js";
 import { normalizeCaption } from "../infrastructure/attachment-manifest.js";
 import {
@@ -64,7 +65,13 @@ export class AttachmentWorkflow {
       const attachmentId = stable.attachment_id;
       const createOperationId = stable.create_operation_id;
       const commitOperationId = stable.commit_operation_id;
-      if (!attachmentId || !createOperationId || !commitOperationId) {
+      const abortOperationId = stable.abort_operation_id;
+      if (
+        !attachmentId ||
+        !createOperationId ||
+        !commitOperationId ||
+        !abortOperationId
+      ) {
         throw new Error("stable pending values are incomplete");
       }
       let pending = this.store.prepareOperation(pendingKind, targetDid, input, {
@@ -72,8 +79,10 @@ export class AttachmentWorkflow {
         values: stable,
         initialStage: "prepared",
       });
+      let slot:
+        Awaited<ReturnType<AttachmentService["createSlot"]>> | undefined;
       try {
-        const slot = await this.attachments.createSlot(
+        slot = await this.attachments.createSlot(
           identity,
           capabilities.serviceDid,
           attachmentId,
@@ -83,11 +92,33 @@ export class AttachmentWorkflow {
           createOperationId,
           pending.createdAt,
         );
-        if (pending.stage === "prepared") {
+      } catch (error) {
+        if (error instanceof JsonRpcFailure) {
+          this.store.abandonOperation(pending);
+        }
+        throw error;
+      }
+      if (pending.stage === "prepared") {
+        try {
           await this.attachments.upload(slot, prepared);
           pending = this.store.advanceOperation(pending, "uploaded");
+        } catch (error) {
+          if (!isRetryableTransportError(error)) {
+            await this.attachments.bestEffortAbort(
+              identity,
+              capabilities.serviceDid,
+              slot,
+              abortOperationId,
+              pending.createdAt,
+            );
+            this.store.abandonOperation(pending);
+          }
+          throw error;
         }
-        const committed = await this.attachments.commit(
+      }
+      let committed;
+      try {
+        committed = await this.attachments.commit(
           identity,
           capabilities.serviceDid,
           slot,
@@ -95,9 +126,23 @@ export class AttachmentWorkflow {
           commitOperationId,
           pending.createdAt,
         );
-        if (pending.stage === "uploaded") {
-          pending = this.store.advanceOperation(pending, "committed");
+      } catch (error) {
+        if (error instanceof JsonRpcFailure) {
+          await this.attachments.bestEffortAbort(
+            identity,
+            capabilities.serviceDid,
+            slot,
+            abortOperationId,
+            pending.createdAt,
+          );
+          this.store.abandonOperation(pending);
         }
+        throw error;
+      }
+      if (pending.stage === "uploaded") {
+        pending = this.store.advanceOperation(pending, "committed");
+      }
+      try {
         const message =
           targetKind === "agent"
             ? await this.direct.sendAttachment(
@@ -134,7 +179,9 @@ export class AttachmentWorkflow {
     outputDir: string,
   ): Promise<string> {
     if (!messageId || !attachmentId) {
-      throw new Error("message and attachment identifiers must not be empty");
+      throw new InvalidInputError(
+        "message and attachment identifiers must not be empty",
+      );
     }
     const context = this.store.loadAttachmentContext(messageId, attachmentId);
     const destination = join(outputDir, context.attachment.filename);
@@ -148,16 +195,26 @@ function target(
   groupDid: string | null,
 ): [string, string, string] {
   if ((recipientDid === null) === (groupDid === null)) {
-    throw new Error("choose exactly one of --to and --group");
+    throw new InvalidInputError("choose exactly one of --to and --group");
   }
   if (recipientDid !== null) {
-    return ["agent", validateWbaDid(recipientDid), "direct.attachment.send"];
+    return ["agent", requireWbaDid(recipientDid), "direct.attachment.send"];
   }
   return [
     "group",
-    validateWbaDid(groupDid ?? "", "group DID"),
+    requireWbaDid(groupDid ?? "", "group DID"),
     "group.attachment.send",
   ];
+}
+
+function requireWbaDid(value: string, field = "DID"): string {
+  try {
+    return validateWbaDid(value, field);
+  } catch (error) {
+    throw new InvalidInputError(
+      error instanceof Error ? error.message : `${field} is invalid`,
+    );
+  }
 }
 
 function inputDigest(value: Record<string, string>): string {

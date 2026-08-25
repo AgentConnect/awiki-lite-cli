@@ -20,7 +20,7 @@ export function validateWbaDid(value: string, field = "DID"): string {
     .toLowerCase()
     .replace(/\.+$/, "");
   validatePublicHostname(hostname, field);
-  if (encodedHost.toLowerCase().replace(/\.+$/, "") !== hostname) {
+  if (encodedHost.replace(/\.+$/, "") !== hostname) {
     throw new Error(`${field} hostname must use canonical lowercase ASCII`);
   }
   for (const encodedSegment of parts.slice(3)) {

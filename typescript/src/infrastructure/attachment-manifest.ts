@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 
+import { InvalidInputError } from "../application/errors.js";
 import type { AttachmentRef } from "../domain/models.js";
 
 export const MAX_CAPTION_CHARS = 4096;
@@ -12,7 +13,7 @@ export function normalizeCaption(
     return null;
   }
   if (value.length > MAX_CAPTION_CHARS) {
-    throw new Error(
+    throw new InvalidInputError(
       `attachment caption must not exceed ${MAX_CAPTION_CHARS} characters`,
     );
   }
@@ -188,7 +189,11 @@ function sizeOf(value: unknown): number {
   if (typeof value !== "string" || !/^[0-9]+$/.test(value)) {
     throw new Error("message contains an invalid attachment size");
   }
-  return Number(value);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error("message contains an invalid attachment size");
+  }
+  return parsed;
 }
 
 function requiredString(value: unknown, field: string): string {

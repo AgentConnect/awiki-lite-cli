@@ -5,7 +5,7 @@ import {
   validatePublicHostname,
   validateWbaDid,
 } from "../domain/validation.js";
-import { verifyResolvedDocument } from "./anp-sdk.js";
+import { didDocumentUrl, verifyResolvedDocument } from "./anp-sdk.js";
 import { pinHttpsUrl, pinnedHeaders } from "./safe-network.js";
 import type { HttpClient } from "./rpc.js";
 
@@ -83,16 +83,9 @@ export async function resolvePeerDid(
     throw new Error("handle and DID domains do not match");
   }
 
-  const segments = did
-    .split(":")
-    .slice(3)
-    .map((segment) => encodeURIComponent(decodeURIComponent(segment)));
-  const didUrl = segments.length
-    ? `https://${domain}/${segments.join("/")}/did.json`
-    : `https://${domain}/.well-known/did.json`;
   const document = await getPublicJson(
     client,
-    didUrl,
+    didDocumentUrl(did),
     "peer DID URL",
     options.allowPrivateNetwork,
   );

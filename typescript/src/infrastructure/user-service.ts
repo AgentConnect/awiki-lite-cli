@@ -25,17 +25,28 @@ export class UserService {
     handle: string,
     domain: string,
   ): Promise<Record<string, unknown>> {
-    return asObject(
-      await callJsonRpc(
-        this.client,
-        `${this.baseUrl}/user-service/v1/handle/rpc`,
-        "validate",
-        {
-          handle,
-          domain,
-        },
-      ),
-    );
+    try {
+      return asObject(
+        await callJsonRpc(
+          this.client,
+          `${this.baseUrl}/user-service/v1/handle/rpc`,
+          "validate",
+          {
+            handle,
+            domain,
+          },
+        ),
+      );
+    } catch (error) {
+      if (
+        error instanceof JsonRpcFailure &&
+        error.code === -32601 &&
+        error.rpcMessage === "method_not_found"
+      ) {
+        return { available: true, validation_deferred: true };
+      }
+      throw error;
+    }
   }
 
   async sendRegistrationOtp(

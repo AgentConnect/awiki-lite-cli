@@ -26,11 +26,9 @@ from awiki_lite_cli.infrastructure.peer_resolver import resolve_peer_did
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
 
-app = typer.Typer(help="Send and download one plain transport-protected attachment.")
 T = TypeVar("T")
 
 
-@app.command("send")
 def send(
     file: Path,
     recipient_did: str | None = typer.Option(None, "--to", help="Direct peer DID or handle."),
@@ -53,7 +51,6 @@ def send(
     typer.echo(f"Sent attachment {attachment_id} in message {message_id}")
 
 
-@app.command("download")
 def download(
     message_id: Annotated[str, typer.Option("--message-id")],
     attachment_id: Annotated[str, typer.Option("--attachment-id")],

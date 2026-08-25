@@ -386,7 +386,7 @@ class AttachmentService:
         limits = value.get("limits")
         if not isinstance(service_did, str) or not isinstance(limits, dict):
             raise RuntimeError("attachment capability response is incomplete")
-        maximum = _decimal_size(limits.get("max_object_bytes"), "max_object_bytes")
+        maximum = _object_byte_limit(limits)
         return AttachmentCapabilities(validate_did(service_did), maximum)
 
     async def create_slot(
@@ -411,7 +411,7 @@ class AttachmentService:
             created_at,
         )
         result = _object(await self._control(identity, "attachment.create_slot", params))
-        return _parse_slot(result, attachment_id)
+        return _parse_slot(result, attachment_id, prepared)
 
     async def upload(self, slot: AttachmentSlot, prepared: PreparedFile) -> None:
         _require_unexpired(slot.expires_at)
@@ -510,19 +510,35 @@ class AttachmentService:
                 access_token=identity.session.access_token,
             )
         )
-        if set(result) != {"download_ticket_b64u", "expires_at", "ticket_binding"}:
+        required = {"download_ticket_b64u", "expires_at", "ticket_binding"}
+        extensions = {
+            "ticket",
+            "object_id",
+            "attachment_id",
+            "download_url",
+            "download_uri",
+            "download_headers",
+        }
+        if not required.issubset(result) or set(result) - required - extensions:
             raise RuntimeError("attachment service returned an invalid download-ticket result")
         binding = result.get("ticket_binding")
         expected_binding = {
             key: value for key, value in params["body"].items() if key != "one_time"
         }
-        if not isinstance(binding, dict) or binding != expected_binding:
+        if not isinstance(binding, dict):
+            raise RuntimeError("attachment service returned a mismatched download-ticket binding")
+        binding_without_sender = {
+            key: value for key, value in binding.items() if key != "sender_did"
+        }
+        if binding_without_sender != expected_binding or (
+            "sender_did" in binding and binding["sender_did"] != context.sender_did
+        ):
             raise RuntimeError("attachment service returned a mismatched download-ticket binding")
         expires_at = _nonempty(result.get("expires_at"), "expires_at")
         _require_unexpired(expires_at, "attachment download ticket")
-        return DownloadTicket(
-            _nonempty(result.get("download_ticket_b64u"), "download ticket"), expires_at
-        )
+        ticket = _nonempty(result.get("download_ticket_b64u"), "download ticket")
+        _validate_ticket_extensions(result, params["body"], ticket)
+        return DownloadTicket(ticket, expires_at)
 
     async def download(
         self,
@@ -686,18 +702,27 @@ def new_created_at() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _parse_slot(value: dict[str, Any], attachment_id: str) -> AttachmentSlot:
-    allowed = {
+def _parse_slot(
+    value: dict[str, Any], attachment_id: str, prepared: PreparedFile
+) -> AttachmentSlot:
+    required = {
         "attachment_id",
         "slot_id",
         "upload_uri",
-        "upload_headers",
         "object_uri",
         "commit_token",
         "expires_at",
     }
-    keys = set(value)
-    if keys != allowed and keys != allowed - {"upload_headers"}:
+    extensions = {
+        "upload_headers",
+        "object_id",
+        "upload_token",
+        "upload_url",
+        "expected_size",
+        "expected_digest",
+        "content_type",
+    }
+    if not required.issubset(value) or set(value) - required - extensions:
         raise RuntimeError("attachment service returned an invalid create-slot result")
     if value.get("attachment_id") != attachment_id:
         raise RuntimeError("attachment service returned a mismatched attachment identifier")
@@ -705,7 +730,7 @@ def _parse_slot(value: dict[str, Any], attachment_id: str) -> AttachmentSlot:
     if not isinstance(headers, dict):
         raise RuntimeError("attachment service returned invalid upload headers")
     parsed_headers = _upload_headers(headers)
-    return AttachmentSlot(
+    slot = AttachmentSlot(
         attachment_id,
         _nonempty(value.get("slot_id"), "slot_id"),
         _https_uri(value.get("upload_uri"), "upload_uri"),
@@ -714,12 +739,16 @@ def _parse_slot(value: dict[str, Any], attachment_id: str) -> AttachmentSlot:
         _nonempty(value.get("commit_token"), "commit_token"),
         _nonempty(value.get("expires_at"), "expires_at"),
     )
+    _validate_slot_extensions(value, slot, prepared)
+    return slot
 
 
 def _parse_commit(
     value: dict[str, Any], slot: AttachmentSlot, prepared: PreparedFile
 ) -> CommittedAttachment:
-    if set(value) != {"committed", "attachment_id", "object_uri", "committed_at"}:
+    required = {"committed", "attachment_id", "object_uri", "committed_at"}
+    extensions = {"slot_id", "object_id", "size", "sha256", "digest", "content_type"}
+    if not required.issubset(value) or set(value) - required - extensions:
         raise RuntimeError("attachment service returned an invalid commit result")
     if (
         value.get("committed") is not True
@@ -735,7 +764,79 @@ def _parse_commit(
         prepared.size,
         prepared.sha256_b64u,
     )
+    _validate_commit_extensions(value, slot, prepared)
     return CommittedAttachment(attachment, _nonempty(value.get("committed_at"), "committed_at"))
+
+
+def _validate_slot_extensions(
+    value: dict[str, Any], slot: AttachmentSlot, prepared: PreparedFile
+) -> None:
+    for field_name in ("object_id", "upload_token"):
+        if field_name in value:
+            _nonempty(value[field_name], field_name)
+    if "upload_url" in value and value["upload_url"] != slot.upload_uri:
+        raise RuntimeError("attachment service returned a mismatched upload URL")
+    if "expected_size" in value and str(value["expected_size"]) != str(prepared.size):
+        raise RuntimeError("attachment service returned a mismatched expected size")
+    if "expected_digest" in value:
+        digest = value["expected_digest"]
+        if (
+            not isinstance(digest, dict)
+            or digest.get("alg") != "sha-256"
+            or digest.get("value_b64u") != prepared.sha256_b64u
+        ):
+            raise RuntimeError("attachment service returned a mismatched expected digest")
+    if "content_type" in value and value["content_type"] != prepared.mime_type:
+        raise RuntimeError("attachment service returned a mismatched content type")
+
+
+def _validate_commit_extensions(
+    value: dict[str, Any], slot: AttachmentSlot, prepared: PreparedFile
+) -> None:
+    if "slot_id" in value and value["slot_id"] != slot.slot_id:
+        raise RuntimeError("attachment service returned a mismatched slot identifier")
+    if "object_id" in value:
+        _nonempty(value["object_id"], "object_id")
+    if "size" in value and str(value["size"]) != str(prepared.size):
+        raise RuntimeError("attachment service returned a mismatched committed size")
+    expected_hex = base64.urlsafe_b64decode(prepared.sha256_b64u + "=").hex()
+    if "sha256" in value and value["sha256"] != expected_hex:
+        raise RuntimeError("attachment service returned a mismatched committed digest")
+    if "digest" in value:
+        digest = value["digest"]
+        if (
+            not isinstance(digest, dict)
+            or digest.get("alg") != "sha-256"
+            or digest.get("value_b64u") != prepared.sha256_b64u
+        ):
+            raise RuntimeError("attachment service returned a mismatched committed digest")
+    if "content_type" in value and value["content_type"] != prepared.mime_type:
+        raise RuntimeError("attachment service returned a mismatched content type")
+
+
+def _validate_ticket_extensions(
+    value: dict[str, Any], request_body: dict[str, Any], ticket: str
+) -> None:
+    if "ticket" in value and value["ticket"] != ticket:
+        raise RuntimeError("attachment service returned a mismatched download ticket")
+    if "object_id" in value:
+        _nonempty(value["object_id"], "object_id")
+    if "attachment_id" in value and value["attachment_id"] != request_body["attachment_id"]:
+        raise RuntimeError("attachment service returned a mismatched attachment identifier")
+    if "download_url" in value:
+        _nonempty(value["download_url"], "download_url")
+    if "download_uri" in value:
+        _nonempty(value["download_uri"], "download_uri")
+    if (
+        "download_url" in value
+        and "download_uri" in value
+        and value["download_url"] != value["download_uri"]
+    ):
+        raise RuntimeError("attachment service returned mismatched download URLs")
+    if "download_headers" in value:
+        headers = value["download_headers"]
+        if not isinstance(headers, dict) or headers != {"Authorization": f"Bearer {ticket}"}:
+            raise RuntimeError("attachment service returned invalid download headers")
 
 
 def _upload_headers(value: dict[str, Any]) -> dict[str, str]:
@@ -789,6 +890,14 @@ def _require(value: dict[str, Any], field_name: str, required: str) -> None:
     advertised = value.get(field_name)
     if not isinstance(advertised, list) or required not in advertised:
         raise RuntimeError(f"message service does not advertise required {required}")
+
+
+def _object_byte_limit(limits: dict[str, Any]) -> int:
+    if limits.get("max_object_bytes") is not None:
+        return _decimal_size(limits.get("max_object_bytes"), "max_object_bytes")
+    if limits.get("max_attachment_bytes") is not None:
+        return _decimal_size(limits.get("max_attachment_bytes"), "max_attachment_bytes")
+    raise RuntimeError("attachment capability response is incomplete")
 
 
 def _decimal_size(value: Any, field_name: str) -> int:

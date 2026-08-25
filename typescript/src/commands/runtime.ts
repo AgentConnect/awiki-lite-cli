@@ -44,7 +44,7 @@ export function requireInteger(
   maximum?: number,
 ): number {
   if (
-    !Number.isInteger(value) ||
+    !Number.isSafeInteger(value) ||
     value < minimum ||
     (maximum !== undefined && value > maximum)
   ) {
@@ -107,24 +107,24 @@ export function mapError(
     if (
       error.code === 401 ||
       error.code === 1401 ||
-      error.message.toLowerCase().includes("unauthorized")
+      error.rpcMessage.toLowerCase().includes("unauthorized")
     ) {
       console.error(`Session expired; run \`${argv0} id refresh-token\`.`);
       process.exit(1);
     }
-    const service =
+    const rejected =
       kind === "registration"
-        ? "Registration service"
+        ? `Registration service rejected the request (JSON-RPC code ${error.code}).`
         : kind === "session"
-          ? "Session refresh"
-          : kind === "group"
-            ? "Group service"
-            : kind === "attachment"
-              ? "Attachment service"
-              : "Message service";
-    console.error(
-      `${service} rejected the request (JSON-RPC code ${error.code}).`,
-    );
+          ? `Session refresh was rejected (JSON-RPC code ${error.code}).`
+          : kind === "sync"
+            ? `Message sync initialization was rejected (JSON-RPC code ${error.code}).`
+            : kind === "group"
+              ? `Group service rejected the request (JSON-RPC code ${error.code}).`
+              : kind === "attachment"
+                ? `Attachment operation was rejected (JSON-RPC code ${error.code}).`
+                : `Message service rejected the request (JSON-RPC code ${error.code}).`;
+    console.error(rejected);
     process.exit(1);
   }
   if (error instanceof SessionExpiredError) {

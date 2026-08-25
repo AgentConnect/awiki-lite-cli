@@ -19,7 +19,11 @@ import {
   buildManifest,
   parseManifest,
 } from "./attachment-manifest.js";
-import { callJsonRpc, type HttpClient } from "./rpc.js";
+import {
+  callJsonRpc,
+  isRetryableTransportError,
+  type HttpClient,
+} from "./rpc.js";
 
 export const ORIGIN_SCHEME = "anp-rfc9421-origin-proof-v1";
 
@@ -191,10 +195,10 @@ function localParams(
 ): Record<string, unknown> {
   const limit = Number(body.limit ?? 1);
   const skip = Number(body.skip ?? 0);
-  if (limit < 1 || limit > 100) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     throw new Error("limit must be between 1 and 100");
   }
-  if (!Number.isInteger(skip) || skip < 0) {
+  if (!Number.isSafeInteger(skip) || skip < 0) {
     throw new Error("skip must be a non-negative integer");
   }
   return {
@@ -241,11 +245,13 @@ export class MessageService {
       }
     }
     const policies = result.proof_policies;
+    const directProof =
+      typeof policies === "object" && policies !== null
+        ? (policies as Record<string, unknown>).direct_base_origin_proof
+        : null;
     if (
-      typeof policies !== "object" ||
-      policies === null ||
-      (policies as Record<string, unknown>).direct_base_origin_proof !==
-        "required"
+      directProof !== "required" &&
+      directProof !== "required_for_canonical_local_and_cross_domain"
     ) {
       throw new Error(
         "message service does not advertise the required Direct Base proof",
@@ -326,42 +332,17 @@ export class MessageService {
       await this.ensureDirectBase(identity);
     }
     const params = buildDirectSend(identity, recipient, text, ids);
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        const value = asObject(
-          await callJsonRpc(this.client, this.endpoint, "direct.send", params, {
-            accessToken: identity.session.accessToken,
-          }),
-        );
-        const meta = params.meta as Record<string, unknown>;
-        if (
-          value.accepted !== true ||
-          value.message_id !== meta.message_id ||
-          value.operation_id !== meta.operation_id
-        ) {
-          throw new Error("service returned an invalid direct.send result");
-        }
-        return {
-          messageId: String(value.message_id),
-          senderDid: identity.identity.did,
-          targetDid: recipient,
-          text,
-          createdAt: String(value.accepted_at),
-          isRead: null,
-          attachments: [],
-          caption: null,
-        };
-      } catch (error) {
-        lastError = error;
-        if (attempt === 1) {
-          throw error;
-        }
-      }
-    }
-    throw lastError instanceof Error
-      ? lastError
-      : new Error("direct.send retry loop ended unexpectedly");
+    const value = await this.sendParams(identity, recipient, params);
+    return {
+      messageId: String(value.message_id),
+      senderDid: identity.identity.did,
+      targetDid: recipient,
+      text,
+      createdAt: String(value.accepted_at),
+      isRead: null,
+      attachments: [],
+      caption: null,
+    };
   }
 
   async sendAttachment(
@@ -378,21 +359,43 @@ export class MessageService {
       caption,
       pending,
     );
-    const value = asObject(
-      await callJsonRpc(this.client, this.endpoint, "direct.send", params, {
-        accessToken: identity.session.accessToken,
-      }),
-    );
+    const value = await this.sendParams(identity, recipient, params);
     return {
       messageId: String(value.message_id),
       senderDid: identity.identity.did,
       targetDid: recipient,
       text: "",
-      createdAt: String(value.accepted_at ?? pending.createdAt),
+      createdAt: String(value.accepted_at),
       isRead: null,
       attachments: [attachment],
       caption,
     };
+  }
+
+  private async sendParams(
+    identity: UnlockedIdentity,
+    recipient: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const value = asObject(
+          await callJsonRpc(this.client, this.endpoint, "direct.send", params, {
+            accessToken: identity.session.accessToken,
+          }),
+        );
+        return acceptDirectSend(value, params, recipient);
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableTransportError(error) || attempt === 1) {
+          throw error;
+        }
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("direct.send retry loop ended unexpectedly");
   }
 
   async inbox(
@@ -418,7 +421,7 @@ export class MessageService {
       result.messages
         .map((item) => parseChat(item, identity.identity.did))
         .filter((item) => item !== null),
-      result.has_more === true,
+      requiredBool(result, "has_more", false),
     ];
   }
 
@@ -444,7 +447,7 @@ export class MessageService {
       result.messages
         .map((item) => parseChat(item, identity.identity.did))
         .filter((item) => item !== null),
-      result.has_more === true,
+      requiredBool(result, "has_more", false),
     ];
   }
 
@@ -461,11 +464,17 @@ export class MessageService {
         { accessToken: identity.session.accessToken },
       ),
     );
-    const updated = result.updated ?? result.updated_count ?? messageIds.length;
-    if (!Number.isInteger(updated) || Number(updated) < 0) {
-      throw new Error("service returned an invalid updated_count");
+    const updated = result.updated_count ?? 0;
+    if (
+      typeof updated !== "number" ||
+      !Number.isSafeInteger(updated) ||
+      updated < 0
+    ) {
+      throw new ProtocolResponseError(
+        "service returned an invalid updated_count",
+      );
     }
-    return Number(updated);
+    return updated;
   }
 }
 
@@ -480,7 +489,9 @@ function parseChat(value: unknown, fallbackTarget: string): ChatMessage | null {
   const attachments: AttachmentRef[] = [];
   let caption: string | null = null;
   if (record.content_type === MANIFEST_CONTENT_TYPE) {
-    const parsed = parseManifest(record.payload ?? record.content);
+    const parsed = parseManifest(
+      record.content !== undefined ? record.content : record.payload,
+    );
     attachments.push(parsed[0]);
     caption = parsed[1];
   }
@@ -490,19 +501,8 @@ function parseChat(value: unknown, fallbackTarget: string): ChatMessage | null {
       requiredString(record, ["sender_did"], "sender_did"),
       "sender_did",
     ),
-    targetDid: validateDid(
-      requiredString(
-        record,
-        ["receiver_did", "target_did"],
-        "receiver_did",
-        fallbackTarget,
-      ),
-      "receiver_did",
-    ),
-    text:
-      record.content_type === "text/plain"
-        ? requiredString(record, ["content", "text"], "message content", "")
-        : "",
+    targetDid: messageTarget(record, fallbackTarget),
+    text: record.content_type === "text/plain" ? messageText(record) : "",
     createdAt:
       record.sent_at === undefined && record.created_at === undefined
         ? null
@@ -511,6 +511,74 @@ function parseChat(value: unknown, fallbackTarget: string): ChatMessage | null {
     attachments,
     caption,
   };
+}
+
+function acceptDirectSend(
+  value: Record<string, unknown>,
+  params: Record<string, unknown>,
+  recipient: string,
+): Record<string, unknown> {
+  const meta = asObject(params.meta, "direct.send meta");
+  if (
+    value.accepted !== true ||
+    typeof value.message_id !== "string" ||
+    !value.message_id ||
+    typeof value.operation_id !== "string" ||
+    !value.operation_id ||
+    typeof value.target_did !== "string" ||
+    !value.target_did ||
+    typeof value.accepted_at !== "string" ||
+    !value.accepted_at
+  ) {
+    throw new Error("service returned an invalid direct.send result");
+  }
+  if (
+    value.message_id !== meta.message_id ||
+    value.operation_id !== meta.operation_id ||
+    value.target_did !== recipient
+  ) {
+    throw new Error("service returned mismatched direct.send identifiers");
+  }
+  return value;
+}
+
+function messageTarget(
+  record: Record<string, unknown>,
+  fallback: string,
+): string {
+  for (const field of ["receiver_did", "target_did"]) {
+    if (field in record) {
+      return validateDid(nonemptyString(record[field], field), "receiver_did");
+    }
+  }
+  return validateDid(fallback, "receiver_did");
+}
+
+function messageText(record: Record<string, unknown>): string {
+  for (const field of ["content", "text"]) {
+    if (field in record) {
+      const result = record[field];
+      if (typeof result !== "string") {
+        throw new ProtocolResponseError(
+          "service returned invalid message content",
+        );
+      }
+      return result;
+    }
+  }
+  throw new ProtocolResponseError("service returned invalid message content");
+}
+
+function requiredBool(
+  value: Record<string, unknown>,
+  field: string,
+  defaultValue?: boolean,
+): boolean {
+  const result = field in value ? value[field] : defaultValue;
+  if (typeof result !== "boolean") {
+    throw new ProtocolResponseError(`service returned an invalid ${field}`);
+  }
+  return result;
 }
 
 function requiredString(

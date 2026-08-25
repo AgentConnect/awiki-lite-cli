@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { JsonRpcFailure } from "./errors.js";
+import { InvalidInputError, JsonRpcFailure } from "./errors.js";
 import type {
   AttachmentContext,
   AuthenticatedIdentity,
@@ -9,7 +9,11 @@ import type {
 } from "../domain/models.js";
 import { validateWbaDid } from "../domain/validation.js";
 import { parseManifest } from "../infrastructure/attachment-manifest.js";
-import type { GroupService } from "../infrastructure/group-service.js";
+import {
+  LITE_MAX_GROUP_MEMBERS,
+  resolveMaxMembers,
+  type GroupService,
+} from "../infrastructure/group-service.js";
 import type { SecureStateStore } from "../infrastructure/state.js";
 import type { UnlockedIdentity } from "../domain/models.js";
 
@@ -25,14 +29,15 @@ export class GroupWorkflow {
   ): Promise<GroupSummary> {
     const name = displayName.trim();
     if (!name || name.length > 128) {
-      throw new Error("group name must contain 1-128 characters");
+      throw new InvalidInputError("group name must contain 1-128 characters");
     }
     const capabilities = await this.service.capabilities(identity);
-    const maxMembers = Math.min(capabilities.maxMembers ?? 500, 500);
-    const digest = inputDigest({
-      display_name: name,
-      max_members: String(maxMembers),
-    });
+    const maxMembers = resolveMaxMembers(capabilities.maxMembers);
+    const digestInput: Record<string, string> = { display_name: name };
+    if (maxMembers !== LITE_MAX_GROUP_MEMBERS) {
+      digestInput.max_members = String(maxMembers);
+    }
+    const digest = inputDigest(digestInput);
     const pending = this.store.prepareOperation(
       "group.create",
       capabilities.serviceDid,
@@ -64,8 +69,8 @@ export class GroupWorkflow {
     groupDid: string,
     memberDid: string,
   ): Promise<string> {
-    const group = validateWbaDid(groupDid, "group DID");
-    const member = validateWbaDid(memberDid);
+    const group = requireWbaDid(groupDid, "group DID");
+    const member = requireWbaDid(memberDid);
     await this.service.capabilities(identity);
     const digest = inputDigest({ group_did: group, member_did: member });
     const pending = this.store.prepareOperation("group.add", group, digest, {
@@ -88,16 +93,18 @@ export class GroupWorkflow {
     groupDid: string,
     text: string,
   ): Promise<GroupMessage> {
-    const group = validateWbaDid(groupDid, "group DID");
+    const group = requireWbaDid(groupDid, "group DID");
     if (!text || !text.trim()) {
-      throw new Error("message text must not be empty");
+      throw new InvalidInputError("message text must not be empty");
     }
     const capabilities = await this.service.capabilities(identity);
     if (
       capabilities.maxGroupMessageBytes !== null &&
       Buffer.byteLength(text) > capabilities.maxGroupMessageBytes
     ) {
-      throw new Error("message text exceeds the service Group message limit");
+      throw new InvalidInputError(
+        "message text exceeds the service Group message limit",
+      );
     }
     const digest = inputDigest({ group_did: group, text });
     const pending = this.store.prepareOperation("group.send", group, digest, {
@@ -125,17 +132,25 @@ export class GroupWorkflow {
   }
 
   async info(groupDid: string) {
-    return this.service.info(this.authenticated(), groupDid);
+    return this.service.info(
+      this.authenticated(),
+      requireWbaDid(groupDid, "group DID"),
+    );
   }
 
   async members(groupDid: string, limit: number, cursor: string | null) {
-    return this.service.members(this.authenticated(), groupDid, limit, cursor);
+    return this.service.members(
+      this.authenticated(),
+      requireWbaDid(groupDid, "group DID"),
+      limit,
+      cursor,
+    );
   }
 
   async messages(groupDid: string, limit: number, sinceSeq: number | null) {
     const [rows, next] = await this.service.messages(
       this.authenticated(),
-      groupDid,
+      requireWbaDid(groupDid, "group DID"),
       limit,
       sinceSeq,
     );
@@ -161,6 +176,16 @@ export class GroupWorkflow {
       identity: this.store.loadPublic(),
       session: this.store.loadSession(),
     };
+  }
+}
+
+function requireWbaDid(value: string, field = "DID"): string {
+  try {
+    return validateWbaDid(value, field);
+  } catch (error) {
+    throw new InvalidInputError(
+      error instanceof Error ? error.message : `${field} is invalid`,
+    );
   }
 }
 

@@ -76,7 +76,12 @@ class SyncBootstrapServicePort(Protocol):
 class GroupServicePort(Protocol):
     async def capabilities(self, identity: Any) -> Any: ...
     async def create(
-        self, identity: UnlockedIdentity, service_did: str, name: str, pending: PendingOperation
+        self,
+        identity: UnlockedIdentity,
+        service_did: str,
+        name: str,
+        max_members: int,
+        pending: PendingOperation,
     ) -> GroupSummary: ...
     async def add(
         self,

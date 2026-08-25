@@ -11,6 +11,7 @@ import httpx
 import typer
 
 from awiki_lite_cli.application.groups import GroupWorkflow
+from awiki_lite_cli.commands._options import LIMIT_1_100, SINCE_SEQ_GE_0
 from awiki_lite_cli.config import Settings
 from awiki_lite_cli.domain.models import GroupMember, GroupMessage, GroupSummary
 from awiki_lite_cli.infrastructure.attachment_manifest import parse_manifest
@@ -40,7 +41,7 @@ def create(name: Annotated[str, typer.Option("--name")]) -> None:
 
 @app.command("list")
 def list_groups(
-    limit: int = typer.Option(50, min=1, max=100),
+    limit: int = typer.Option(50, parser=LIMIT_1_100),
     cursor: str | None = typer.Option(None, hidden=True),
 ) -> None:
     """List ordinary groups visible to the current identity."""
@@ -62,7 +63,7 @@ def info(group_did: Annotated[str, typer.Option("--group")]) -> None:
 @app.command("members")
 def members(
     group_did: Annotated[str, typer.Option("--group")],
-    limit: int = typer.Option(100, min=1, max=100),
+    limit: int = typer.Option(100, parser=LIMIT_1_100),
     cursor: str | None = typer.Option(None, hidden=True),
 ) -> None:
     """List active membership records for one group."""
@@ -127,8 +128,8 @@ def send(
 @app.command("messages")
 def messages(
     group_did: Annotated[str, typer.Option("--group")],
-    limit: int = typer.Option(50, min=1, max=100),
-    since_seq: int | None = typer.Option(None, "--since-seq", min=0, hidden=True),
+    limit: int = typer.Option(50, parser=LIMIT_1_100),
+    since_seq: int | None = typer.Option(None, "--since-seq", parser=SINCE_SEQ_GE_0, hidden=True),
 ) -> None:
     """Read ordinary Group Base messages after an optional group-local sequence."""
     rows, next_since_seq = _run(

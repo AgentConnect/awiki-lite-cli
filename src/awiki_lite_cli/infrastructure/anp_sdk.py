@@ -203,7 +203,9 @@ async def resolve_attachment_service_did(
             allow_private_network=allow_private_network,
         )
         owns_client = client is None
-        active_client = client or httpx.AsyncClient(timeout=10.0, trust_env=False)
+        active_client = client or httpx.AsyncClient(
+            timeout=10.0, trust_env=False, follow_redirects=False
+        )
         try:
             response = await active_client.get(
                 target.url,

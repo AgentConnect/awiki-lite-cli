@@ -10,6 +10,7 @@ from typing import Annotated, TypeVar
 import httpx
 import typer
 
+from awiki_lite_cli.commands._options import LIMIT_1_100, SKIP_GE_0
 from awiki_lite_cli.config import Settings
 from awiki_lite_cli.domain.models import AttachmentContext, AuthenticatedIdentity, ChatMessage
 from awiki_lite_cli.infrastructure.message_service import MessageService
@@ -18,11 +19,9 @@ from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore, StateError
 from awiki_lite_cli.presentation import terminal_text
 
-app = typer.Typer(help="Send and read transport-protected direct messages.")
 T = TypeVar("T")
 
 
-@app.command("send")
 def send(
     recipient_did: str,
     text: str | None = typer.Argument(None),
@@ -76,12 +75,11 @@ def send(
     typer.echo(f"Sent {message.message_id} to {message.target_did}")
 
 
-@app.command("inbox")
 def inbox(
-    limit: int = typer.Option(20, min=1, max=100),
+    limit: int = typer.Option(20, parser=LIMIT_1_100),
     skip: int = typer.Option(
         0,
-        min=0,
+        parser=SKIP_GE_0,
         help="Skip messages from the start of the result set.",
         hidden=True,
     ),
@@ -110,13 +108,12 @@ def inbox(
         typer.echo(f"More messages are available; use --skip {skip + limit}.")
 
 
-@app.command("history")
 def history(
     peer_did: Annotated[str, typer.Option("--with", help="Direct peer DID or handle.")],
-    limit: int = typer.Option(50, min=1, max=100),
+    limit: int = typer.Option(50, parser=LIMIT_1_100),
     skip: int = typer.Option(
         0,
-        min=0,
+        parser=SKIP_GE_0,
         help="Skip messages from the start of the result set.",
         hidden=True,
     ),
@@ -150,7 +147,10 @@ def _run(action: Callable[[MessageService, SecureStateStore], Awaitable[T]]) -> 
 
     async def invoke() -> T:
         async with httpx.AsyncClient(
-            timeout=20.0, trust_env=False, verify=settings.tls_context()
+            timeout=20.0,
+            trust_env=False,
+            follow_redirects=False,
+            verify=settings.tls_context(),
         ) as client:
             return await action(MessageService(client, settings.message_service_url), store)
 

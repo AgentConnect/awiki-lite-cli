@@ -1,11 +1,14 @@
 export class JsonRpcFailure extends Error {
+  readonly rpcMessage: string;
+
   constructor(
     public readonly code: number,
-    message: string,
+    rpcMessage: string,
     public readonly data: unknown = null,
   ) {
     super(`JSON-RPC request failed with code ${code}`);
     this.name = "JsonRpcFailure";
+    this.rpcMessage = rpcMessage;
   }
 }
 

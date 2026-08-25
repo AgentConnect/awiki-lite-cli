@@ -43,7 +43,7 @@ export function registerAttachmentCommand(root: Command): void {
               options.attachmentId,
               options.output,
             );
-            console.log(`Downloaded ${path}`);
+            console.log(`Downloaded attachment to ${path}`);
           } finally {
             http.close();
           }
@@ -95,7 +95,7 @@ export async function sendAttachmentMessage(
         caption,
       },
     );
-    console.log(`Sent attachment ${attachmentId} as ${messageId}`);
+    console.log(`Sent attachment ${attachmentId} in message ${messageId}`);
   } finally {
     http.close();
   }

@@ -73,7 +73,10 @@ def init_sync() -> None:
 async def _register(handle: str, phone: str):  # type: ignore[no-untyped-def]
     settings = Settings.from_env()
     async with httpx.AsyncClient(
-        timeout=20.0, trust_env=False, verify=settings.tls_context()
+        timeout=20.0,
+        trust_env=False,
+        follow_redirects=False,
+        verify=settings.tls_context(),
     ) as client:
         workflow = RegistrationWorkflow(
             UserService(client, settings.user_service_url),
@@ -105,7 +108,10 @@ async def _init_sync(
     if installation.bootstrap is not None:
         return installation.bootstrap
     async with httpx.AsyncClient(
-        timeout=20.0, trust_env=False, verify=settings.tls_context()
+        timeout=20.0,
+        trust_env=False,
+        follow_redirects=False,
+        verify=settings.tls_context(),
     ) as client:
         bootstrap = await MessageService(client, settings.message_service_url).bootstrap_sync(
             identity, installation.client_instance_id

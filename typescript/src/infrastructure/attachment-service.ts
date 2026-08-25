@@ -21,7 +21,9 @@ import type {
   AuthenticatedIdentity,
   UnlockedIdentity,
 } from "../domain/models.js";
-import { ATTACHMENT_PROFILE } from "./anp-sdk.js";
+import { InvalidInputError } from "../application/errors.js";
+import { ATTACHMENT_PROFILE, resolveAttachmentServiceDid } from "./anp-sdk.js";
+import { MANIFEST_CONTENT_TYPE } from "./attachment-manifest.js";
 import { pinHttpsUrl, pinnedHeaders } from "./safe-network.js";
 import { buildCapabilities, validateDid } from "./message-service.js";
 import { callJsonRpc, type HttpClient } from "./rpc.js";
@@ -41,6 +43,7 @@ export interface AttachmentSlot {
   readonly uploadHeaders: Record<string, string>;
   readonly objectUri: string;
   readonly commitToken: string;
+  readonly expiresAt: string;
 }
 
 export interface PreparedFile {
@@ -56,17 +59,27 @@ export interface PreparedFile {
 }
 
 export function prepareFile(path: string, maxBytes: number): PreparedFile {
-  if (maxBytes < 0) {
-    throw new Error("attachment size limit is invalid");
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new InvalidInputError("attachment size limit is invalid");
   }
-  const before = lstatSync(path);
+  let before;
+  try {
+    before = lstatSync(path);
+  } catch {
+    throw new InvalidInputError("attachment file is unavailable");
+  }
   if (!before.isFile()) {
-    throw new Error(
+    throw new InvalidInputError(
       "attachment path must be a regular file, not a symlink or special file",
     );
   }
   const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
-  const fd = openSync(path, flags);
+  let fd: number;
+  try {
+    fd = openSync(path, flags);
+  } catch {
+    throw new InvalidInputError("attachment file cannot be opened safely");
+  }
   try {
     const opened = fstatSync(fd);
     if (
@@ -77,7 +90,9 @@ export function prepareFile(path: string, maxBytes: number): PreparedFile {
       throw new Error("attachment file changed while it was opened");
     }
     if (opened.size > maxBytes) {
-      throw new Error("attachment exceeds the service object-size limit");
+      throw new InvalidInputError(
+        "attachment exceeds the service object-size limit",
+      );
     }
     const digest = createHash("sha256");
     let total = 0;
@@ -86,7 +101,9 @@ export function prepareFile(path: string, maxBytes: number): PreparedFile {
     while (read > 0) {
       total += read;
       if (total > maxBytes) {
-        throw new Error("attachment exceeds the service object-size limit");
+        throw new InvalidInputError(
+          "attachment exceeds the service object-size limit",
+        );
       }
       digest.update(buffer.subarray(0, read));
       read = readSync(fd, buffer, 0, CHUNK_SIZE, null);
@@ -132,6 +149,7 @@ export class AttachmentService {
     private readonly client: HttpClient,
     baseUrl: string,
     private readonly allowPrivateNetwork = false,
+    private readonly serviceResolver?: (senderDid: string) => Promise<string>,
   ) {
     this.endpoint = `${baseUrl.replace(/\/+$/, "")}/im/rpc`;
   }
@@ -150,19 +168,26 @@ export class AttachmentService {
         },
       ),
     );
-    const advertised = result.supported_profiles;
+    requireAdvertised(result, "supported_profiles", ATTACHMENT_PROFILE);
+    requireAdvertised(
+      result,
+      "supported_security_profiles",
+      "transport-protected",
+    );
+    requireAdvertised(result, "supported_content_types", MANIFEST_CONTENT_TYPE);
+    const serviceDid = result.service_did;
+    const limits = result.limits;
     if (
-      !Array.isArray(advertised) ||
-      !advertised.includes(ATTACHMENT_PROFILE)
+      typeof serviceDid !== "string" ||
+      typeof limits !== "object" ||
+      limits === null ||
+      Array.isArray(limits)
     ) {
-      throw new Error(
-        `message service does not advertise required ${ATTACHMENT_PROFILE}`,
-      );
+      throw new Error("attachment capability response is incomplete");
     }
-    const limits = asObject(result.limits ?? {});
     return {
-      serviceDid: validateDid(String(result.service_did ?? "")),
-      maxObjectBytes: Number(limits.max_object_bytes ?? 1073741824),
+      serviceDid: validateDid(serviceDid),
+      maxObjectBytes: objectByteLimit(limits as Record<string, unknown>),
     };
   }
 
@@ -205,18 +230,11 @@ export class AttachmentService {
         { accessToken: identity.session.accessToken },
       ),
     );
-    const headers = filterUploadHeaders(asObject(result.upload_headers ?? {}));
-    return {
-      attachmentId,
-      slotId: String(result.slot_id),
-      uploadUri: String(result.upload_uri),
-      uploadHeaders: headers,
-      objectUri: String(result.object_uri ?? ""),
-      commitToken: String(result.commit_token ?? ""),
-    };
+    return parseSlot(result, attachmentId, prepared);
   }
 
   async upload(slot: AttachmentSlot, prepared: PreparedFile): Promise<void> {
+    requireUnexpired(slot.expiresAt);
     prepared.assertUnchanged();
     const target = await pinHttpsUrl(slot.uploadUri, {
       field: "attachment upload URI",
@@ -275,17 +293,7 @@ export class AttachmentService {
         { accessToken: identity.session.accessToken },
       ),
     );
-    return {
-      attachment: {
-        attachmentId: slot.attachmentId,
-        objectUri: String(result.object_uri ?? slot.objectUri),
-        filename: prepared.filename,
-        mimeType: prepared.mimeType,
-        size: prepared.size,
-        sha256B64u: prepared.sha256B64u,
-      },
-      committedAt: String(result.committed_at ?? createdAt),
-    };
+    return parseCommit(result, slot, prepared);
   }
 
   async bestEffortAbort(
@@ -319,12 +327,34 @@ export class AttachmentService {
   async getDownloadTicket(
     identity: AuthenticatedIdentity,
     context: AttachmentContext,
-  ): Promise<{ value: string }> {
+  ): Promise<{ value: string; expiresAt: string }> {
     await pinHttpsUrl(context.attachment.objectUri, {
       field: "attachment object URI",
       allowPrivateNetwork: this.allowPrivateNetwork,
     });
-    const capabilities = await this.capabilities(identity);
+    const resolver =
+      this.serviceResolver ??
+      ((senderDid: string) =>
+        resolveAttachmentServiceDid(senderDid, this.client, {
+          allowPrivateNetwork: this.allowPrivateNetwork,
+        }));
+    let serviceDid: string;
+    try {
+      serviceDid = validateDid(await resolver(context.senderDid));
+    } catch {
+      throw new Error("resolved attachment service DID is invalid");
+    }
+    const body: Record<string, unknown> = {
+      attachment_id: context.attachment.attachmentId,
+      object_uri: context.attachment.objectUri,
+      requester_did: identity.identity.did,
+      message_security_profile: "transport-protected",
+      message_id: context.messageId,
+      one_time: true,
+      ...(context.messageTargetDid
+        ? { message_target_did: context.messageTargetDid }
+        : { group_did: context.groupDid }),
+    };
     const result = asObject(
       await callJsonRpc(
         this.client,
@@ -333,35 +363,28 @@ export class AttachmentService {
         {
           meta: controlMeta(
             identity.identity.did,
-            capabilities.serviceDid,
+            serviceDid,
             randomUUID(),
             new Date().toISOString(),
           ),
-          body: {
-            attachment_id: context.attachment.attachmentId,
-            object_uri: context.attachment.objectUri,
-            requester_did: identity.identity.did,
-            message_security_profile: "transport-protected",
-            message_id: context.messageId,
-            one_time: true,
-            ...(context.messageTargetDid
-              ? { message_target_did: context.messageTargetDid }
-              : { group_did: context.groupDid }),
-          },
+          body,
         },
         { accessToken: identity.session.accessToken },
       ),
     );
-    return { value: String(result.download_ticket_b64u ?? "") };
+    return parseDownloadTicket(result, body, context.senderDid);
   }
 
   async download(
-    ticket: { value: string },
+    ticket: { value: string; expiresAt?: string },
     attachment: AttachmentRef,
     destination: string,
   ): Promise<string> {
+    if (ticket.expiresAt) {
+      requireUnexpired(ticket.expiresAt, "attachment download ticket");
+    }
     if (existsSync(destination)) {
-      throw new Error("download destination already exists");
+      throw new InvalidInputError("download destination already exists");
     }
     const target = await pinHttpsUrl(attachment.objectUri, {
       field: "attachment object URI",
@@ -382,7 +405,10 @@ export class AttachmentService {
       );
     }
     const length = response.headers["content-length"];
-    if (length !== undefined && Number(length) !== attachment.size) {
+    if (
+      length !== undefined &&
+      decimalSize(length, "Content-Length") !== attachment.size
+    ) {
       throw new Error("attachment download size does not match the Manifest");
     }
     const temporary = join(
@@ -429,7 +455,7 @@ export class AttachmentService {
       linkSync(temporary, destination);
     } catch {
       unlinkSync(temporary);
-      throw new Error("attachment output file already exists");
+      throw new InvalidInputError("attachment output file already exists");
     }
     unlinkSync(temporary);
     return destination;
@@ -480,12 +506,19 @@ function filterUploadHeaders(
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [key, item] of Object.entries(value)) {
-    if (
-      UPLOAD_HEADER_ALLOWLIST.has(key.toLowerCase()) &&
-      typeof item === "string"
-    ) {
-      headers[key] = item;
+    const name = key.trim().toLowerCase();
+    if (!UPLOAD_HEADER_ALLOWLIST.has(name)) {
+      throw new Error("attachment service returned a forbidden upload header");
     }
+    if (
+      typeof item !== "string" ||
+      !item ||
+      item.includes("\r") ||
+      item.includes("\n")
+    ) {
+      throw new Error("attachment service returned an invalid upload header");
+    }
+    headers[name] = item;
   }
   return headers;
 }
@@ -497,6 +530,361 @@ function guessMime(filename: string): string {
   if (filename.endsWith(".txt")) return "text/plain";
   if (filename.endsWith(".pdf")) return "application/pdf";
   return "application/octet-stream";
+}
+
+function requireAdvertised(
+  result: Record<string, unknown>,
+  field: string,
+  required: string,
+): void {
+  const advertised = result[field];
+  if (!Array.isArray(advertised) || !advertised.includes(required)) {
+    throw new Error(`message service does not advertise required ${required}`);
+  }
+}
+
+function objectByteLimit(limits: Record<string, unknown>): number {
+  if (
+    limits.max_object_bytes !== undefined &&
+    limits.max_object_bytes !== null
+  ) {
+    return decimalSize(limits.max_object_bytes, "max_object_bytes");
+  }
+  if (
+    limits.max_attachment_bytes !== undefined &&
+    limits.max_attachment_bytes !== null
+  ) {
+    return decimalSize(limits.max_attachment_bytes, "max_attachment_bytes");
+  }
+  throw new Error("attachment capability response is incomplete");
+}
+
+function nonempty(value: unknown, field: string): string {
+  if (typeof value !== "string" || !value) {
+    throw new Error(`attachment service returned an invalid ${field}`);
+  }
+  return value;
+}
+
+function httpsUri(value: unknown, field: string): string {
+  const uri = nonempty(value, field);
+  let parsed: URL;
+  try {
+    parsed = new URL(uri);
+  } catch {
+    throw new Error(`attachment service returned an unsafe ${field}`);
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    !parsed.hostname ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error(`attachment service returned an unsafe ${field}`);
+  }
+  return uri;
+}
+
+function parseSlot(
+  value: Record<string, unknown>,
+  attachmentId: string,
+  prepared: PreparedFile,
+): AttachmentSlot {
+  const required = new Set([
+    "attachment_id",
+    "slot_id",
+    "upload_uri",
+    "object_uri",
+    "commit_token",
+    "expires_at",
+  ]);
+  const extensions = new Set([
+    "upload_headers",
+    "object_id",
+    "upload_token",
+    "upload_url",
+    "expected_size",
+    "expected_digest",
+    "content_type",
+  ]);
+  if (!hasRequiredAndKnownFields(value, required, extensions)) {
+    throw new Error(
+      "attachment service returned an invalid create-slot result",
+    );
+  }
+  if (value.attachment_id !== attachmentId) {
+    throw new Error(
+      "attachment service returned a mismatched attachment identifier",
+    );
+  }
+  const headers =
+    value.upload_headers === undefined ? {} : asObject(value.upload_headers);
+  const slot = {
+    attachmentId,
+    slotId: nonempty(value.slot_id, "slot_id"),
+    uploadUri: httpsUri(value.upload_uri, "upload_uri"),
+    uploadHeaders: filterUploadHeaders(headers),
+    objectUri: httpsUri(value.object_uri, "object_uri"),
+    commitToken: nonempty(value.commit_token, "commit_token"),
+    expiresAt: nonempty(value.expires_at, "expires_at"),
+  };
+  validateSlotExtensions(value, slot, prepared);
+  return slot;
+}
+
+function parseCommit(
+  value: Record<string, unknown>,
+  slot: AttachmentSlot,
+  prepared: PreparedFile,
+): { attachment: AttachmentRef; committedAt: string } {
+  const required = new Set([
+    "committed",
+    "attachment_id",
+    "object_uri",
+    "committed_at",
+  ]);
+  const extensions = new Set([
+    "slot_id",
+    "object_id",
+    "size",
+    "sha256",
+    "digest",
+    "content_type",
+  ]);
+  if (!hasRequiredAndKnownFields(value, required, extensions)) {
+    throw new Error("attachment service returned an invalid commit result");
+  }
+  if (
+    value.committed !== true ||
+    value.attachment_id !== slot.attachmentId ||
+    value.object_uri !== slot.objectUri
+  ) {
+    throw new Error("attachment service returned a mismatched commit result");
+  }
+  validateCommitExtensions(value, slot, prepared);
+  return {
+    attachment: {
+      attachmentId: slot.attachmentId,
+      objectUri: slot.objectUri,
+      filename: prepared.filename,
+      mimeType: prepared.mimeType,
+      size: prepared.size,
+      sha256B64u: prepared.sha256B64u,
+    },
+    committedAt: nonempty(value.committed_at, "committed_at"),
+  };
+}
+
+function parseDownloadTicket(
+  value: Record<string, unknown>,
+  requestBody: Record<string, unknown>,
+  senderDid: string,
+): { value: string; expiresAt: string } {
+  const required = new Set([
+    "download_ticket_b64u",
+    "expires_at",
+    "ticket_binding",
+  ]);
+  const extensions = new Set([
+    "ticket",
+    "object_id",
+    "attachment_id",
+    "download_url",
+    "download_uri",
+    "download_headers",
+  ]);
+  if (!hasRequiredAndKnownFields(value, required, extensions)) {
+    throw new Error(
+      "attachment service returned an invalid download-ticket result",
+    );
+  }
+  const binding = value.ticket_binding;
+  if (
+    typeof binding !== "object" ||
+    binding === null ||
+    Array.isArray(binding)
+  ) {
+    throw new Error(
+      "attachment service returned a mismatched download-ticket binding",
+    );
+  }
+  const expected: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(requestBody)) {
+    if (key !== "one_time") {
+      expected[key] = item;
+    }
+  }
+  const bindingRecord = binding as Record<string, unknown>;
+  const bindingWithoutSender = Object.fromEntries(
+    Object.entries(bindingRecord).filter(([key]) => key !== "sender_did"),
+  );
+  if (
+    !sameRecord(bindingWithoutSender, expected) ||
+    ("sender_did" in bindingRecord && bindingRecord.sender_did !== senderDid)
+  ) {
+    throw new Error(
+      "attachment service returned a mismatched download-ticket binding",
+    );
+  }
+  const expiresAt = nonempty(value.expires_at, "expires_at");
+  requireUnexpired(expiresAt, "attachment download ticket");
+  const ticket = nonempty(value.download_ticket_b64u, "download ticket");
+  validateTicketExtensions(value, requestBody, ticket);
+  return {
+    value: ticket,
+    expiresAt,
+  };
+}
+
+function hasRequiredAndKnownFields(
+  value: Record<string, unknown>,
+  required: Set<string>,
+  extensions: Set<string>,
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    [...required].every((key) => key in value) &&
+    keys.every((key) => required.has(key) || extensions.has(key))
+  );
+}
+
+function validateSlotExtensions(
+  value: Record<string, unknown>,
+  slot: AttachmentSlot,
+  prepared: PreparedFile,
+): void {
+  for (const field of ["object_id", "upload_token"]) {
+    if (field in value) nonempty(value[field], field);
+  }
+  if ("upload_url" in value && value.upload_url !== slot.uploadUri) {
+    throw new Error("attachment service returned a mismatched upload URL");
+  }
+  if (
+    "expected_size" in value &&
+    String(value.expected_size) !== String(prepared.size)
+  ) {
+    throw new Error("attachment service returned a mismatched expected size");
+  }
+  if ("expected_digest" in value) {
+    const digest = asObject(value.expected_digest);
+    if (digest.alg !== "sha-256" || digest.value_b64u !== prepared.sha256B64u) {
+      throw new Error(
+        "attachment service returned a mismatched expected digest",
+      );
+    }
+  }
+  if ("content_type" in value && value.content_type !== prepared.mimeType) {
+    throw new Error("attachment service returned a mismatched content type");
+  }
+}
+
+function validateCommitExtensions(
+  value: Record<string, unknown>,
+  slot: AttachmentSlot,
+  prepared: PreparedFile,
+): void {
+  if ("slot_id" in value && value.slot_id !== slot.slotId) {
+    throw new Error("attachment service returned a mismatched slot identifier");
+  }
+  if ("object_id" in value) nonempty(value.object_id, "object_id");
+  if ("size" in value && String(value.size) !== String(prepared.size)) {
+    throw new Error("attachment service returned a mismatched committed size");
+  }
+  const expectedHex = Buffer.from(prepared.sha256B64u, "base64url").toString(
+    "hex",
+  );
+  if ("sha256" in value && value.sha256 !== expectedHex) {
+    throw new Error(
+      "attachment service returned a mismatched committed digest",
+    );
+  }
+  if ("digest" in value) {
+    const digest = asObject(value.digest);
+    if (digest.alg !== "sha-256" || digest.value_b64u !== prepared.sha256B64u) {
+      throw new Error(
+        "attachment service returned a mismatched committed digest",
+      );
+    }
+  }
+  if ("content_type" in value && value.content_type !== prepared.mimeType) {
+    throw new Error("attachment service returned a mismatched content type");
+  }
+}
+
+function validateTicketExtensions(
+  value: Record<string, unknown>,
+  requestBody: Record<string, unknown>,
+  ticket: string,
+): void {
+  if ("ticket" in value && value.ticket !== ticket) {
+    throw new Error("attachment service returned a mismatched download ticket");
+  }
+  if ("object_id" in value) nonempty(value.object_id, "object_id");
+  if (
+    "attachment_id" in value &&
+    value.attachment_id !== requestBody.attachment_id
+  ) {
+    throw new Error(
+      "attachment service returned a mismatched attachment identifier",
+    );
+  }
+  if ("download_url" in value) nonempty(value.download_url, "download_url");
+  if ("download_uri" in value) nonempty(value.download_uri, "download_uri");
+  if (
+    "download_url" in value &&
+    "download_uri" in value &&
+    value.download_url !== value.download_uri
+  ) {
+    throw new Error("attachment service returned mismatched download URLs");
+  }
+  if ("download_headers" in value) {
+    const headers = asObject(value.download_headers);
+    if (!sameRecord(headers, { Authorization: `Bearer ${ticket}` })) {
+      throw new Error("attachment service returned invalid download headers");
+    }
+  }
+}
+
+function sameRecord(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): boolean {
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (leftKeys.join(",") !== rightKeys.join(",")) {
+    return false;
+  }
+  return leftKeys.every((key) => left[key] === right[key]);
+}
+
+function requireUnexpired(
+  value: string,
+  subject = "attachment upload slot",
+): void {
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(
+      value,
+    )
+  ) {
+    throw new Error("attachment service returned an invalid expires_at");
+  }
+  const expires = Date.parse(value);
+  if (Number.isNaN(expires) || expires <= Date.now()) {
+    throw new Error(`${subject} has expired`);
+  }
+}
+
+function decimalSize(value: unknown, field: string): number {
+  if (typeof value !== "string" || !/^[0-9]+$/.test(value)) {
+    throw new Error(`attachment service returned an invalid ${field}`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`attachment service returned an invalid ${field}`);
+  }
+  return parsed;
 }
 
 function asObject(value: unknown): Record<string, unknown> {

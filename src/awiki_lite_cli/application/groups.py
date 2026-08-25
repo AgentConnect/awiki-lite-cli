@@ -19,6 +19,13 @@ from awiki_lite_cli.domain.models import (
 )
 from awiki_lite_cli.domain.validation import validate_wba_did
 
+LITE_MAX_GROUP_MEMBERS = 500
+
+
+def resolve_max_members(advertised: int | None) -> int:
+    limit = advertised if advertised is not None else LITE_MAX_GROUP_MEMBERS
+    return min(limit, LITE_MAX_GROUP_MEMBERS)
+
 
 class GroupWorkflow:
     def __init__(
@@ -36,12 +43,18 @@ class GroupWorkflow:
         if not name or len(name) > 128:
             raise ValueError("group name must contain 1-128 characters")
         capabilities = await self.service.capabilities(identity)
-        digest = _input_digest({"display_name": name})
+        max_members = resolve_max_members(getattr(capabilities, "max_members", None))
+        digest_input = {"display_name": name}
+        if max_members != LITE_MAX_GROUP_MEMBERS:
+            digest_input["max_members"] = str(max_members)
+        digest = _input_digest(digest_input)
         pending = self.store.prepare_operation(
             "group.create", capabilities.service_did, digest, needs_message_id=False
         )
         try:
-            result = await self.service.create(identity, capabilities.service_did, name, pending)
+            result = await self.service.create(
+                identity, capabilities.service_did, name, max_members, pending
+            )
         except JsonRpcFailure:
             self.store.abandon_operation(pending)
             raise
@@ -88,19 +101,20 @@ class GroupWorkflow:
         return await self.service.list_groups(self._authenticated(), limit, cursor)
 
     async def info(self, group_did: str) -> GroupSummary:
-        return await self.service.info(self._authenticated(), group_did)
+        group = validate_wba_did(group_did, field="group DID")
+        return await self.service.info(self._authenticated(), group)
 
     async def members(
         self, group_did: str, limit: int, cursor: str | None
     ) -> tuple[list[GroupMember], str | None]:
-        return await self.service.members(self._authenticated(), group_did, limit, cursor)
+        group = validate_wba_did(group_did, field="group DID")
+        return await self.service.members(self._authenticated(), group, limit, cursor)
 
     async def messages(
         self, group_did: str, limit: int, since_seq: int | None
     ) -> tuple[list[GroupMessage], int | None]:
-        rows, next_seq = await self.service.messages(
-            self._authenticated(), group_did, limit, since_seq
-        )
+        group = validate_wba_did(group_did, field="group DID")
+        rows, next_seq = await self.service.messages(self._authenticated(), group, limit, since_seq)
         contexts = []
         for message in rows:
             if message.message_type == "attachment_manifest":

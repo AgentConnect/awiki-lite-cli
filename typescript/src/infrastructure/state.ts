@@ -21,11 +21,12 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { flock } from "fs-ext";
+import { flockSync } from "fs-ext";
 
 import {
   IdentityExistsError,
   IdentityMissingError,
+  InvalidInputError,
   InvalidPassphraseError,
   PendingOperationError,
   StateError,
@@ -99,16 +100,16 @@ export class SecureStateStore {
     const fd = openSync(path, flags, 0o600);
     try {
       securePath(path, false);
+      flockSync(fd, "ex");
       const stat = lstatSync(path);
       if (stat.size === 0) {
         writeSync(fd, Buffer.from([0]));
         fsyncSync(fd);
       }
-      flock(fd, "ex");
       return fn();
     } finally {
       try {
-        flock(fd, "un");
+        flockSync(fd, "un");
       } catch {
         // unlock best-effort
       }
@@ -472,6 +473,7 @@ export class SecureStateStore {
   }
 
   private loadKeys(passphrase: string): [string, string, string] {
+    validatePassphrase(passphrase);
     try {
       return SECRET_NAMES.map((name) =>
         decryptPrivateKeyPem(
@@ -553,7 +555,9 @@ export class SecureStateStore {
 
 export function validatePassphrase(passphrase: string): void {
   if (passphrase.length < 12 || !passphrase.trim()) {
-    throw new StateError("passphrase must contain at least 12 characters");
+    throw new InvalidInputError(
+      "passphrase must contain at least 12 characters",
+    );
   }
 }
 
@@ -744,6 +748,7 @@ export function parsePendingOperation(
       !pending.operationId ||
       !pending.createdAt ||
       pending.proofCreated <= 0 ||
+      !Number.isSafeInteger(pending.proofCreated) ||
       !pending.proofNonce
     ) {
       throw new StateError("pending operation state is invalid");
@@ -794,6 +799,7 @@ function parseLegacyPendingSend(
       !pending.messageId ||
       !pending.createdAt ||
       pending.proofCreated <= 0 ||
+      !Number.isSafeInteger(pending.proofCreated) ||
       !pending.proofNonce
     ) {
       throw new StateError("legacy pending send state is invalid");
@@ -909,6 +915,7 @@ function validateAttachmentContext(context: AttachmentContext): void {
     !attachment.objectUri.startsWith("https://") ||
     !attachment.filename ||
     !attachment.mimeType ||
+    !Number.isSafeInteger(attachment.size) ||
     attachment.size < 0 ||
     !attachment.sha256B64u
   ) {

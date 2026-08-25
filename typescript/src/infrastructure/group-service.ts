@@ -19,15 +19,24 @@ import {
   ORIGIN_SCHEME,
   validateDid,
 } from "./message-service.js";
-import { callJsonRpc, type HttpClient } from "./rpc.js";
+import {
+  callJsonRpc,
+  isRetryableTransportError,
+  type HttpClient,
+} from "./rpc.js";
 
 export const GROUP_PROFILE = "anp.group.base.v1";
 export const GROUP_LOCAL_PROFILE = "anp.group.local.v1";
+export const LITE_MAX_GROUP_MEMBERS = 500;
 
 export interface GroupCapabilities {
   readonly serviceDid: string;
   readonly maxGroupMessageBytes: number | null;
   readonly maxMembers: number | null;
+}
+
+export function resolveMaxMembers(advertised: number | null): number {
+  return Math.min(advertised ?? LITE_MAX_GROUP_MEMBERS, LITE_MAX_GROUP_MEMBERS);
 }
 
 export function buildGroupCreate(
@@ -485,14 +494,20 @@ export class GroupService {
             accessToken: identity.session.accessToken,
           }),
         );
-        if (result.accepted !== true) {
+        if (
+          result.accepted !== true &&
+          (result.accepted !== undefined ||
+            !["group.create", "group.add"].includes(method) ||
+            result.group_receipt === undefined ||
+            result.group_receipt === null)
+        ) {
           throw new Error(`service returned an invalid ${method} result`);
         }
         validateMutationResult(method, params, result);
         return result;
       } catch (error) {
         lastError = error;
-        if (error instanceof ProtocolResponseError || attempt === 1) {
+        if (!isRetryableTransportError(error) || attempt === 1) {
           throw error;
         }
       }
@@ -692,11 +707,14 @@ function nonnegativeInt(value: unknown, field: string): number {
 }
 
 function parseWireInt(value: unknown, field: string): number {
-  if (typeof value === "number" && Number.isInteger(value)) {
+  if (typeof value === "number" && Number.isSafeInteger(value)) {
     return value;
   }
   if (typeof value === "string" && /^0$|^[1-9][0-9]*$/.test(value)) {
-    return Number(value);
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) {
+      return parsed;
+    }
   }
   throw new ProtocolResponseError(`service returned invalid ${field}`);
 }

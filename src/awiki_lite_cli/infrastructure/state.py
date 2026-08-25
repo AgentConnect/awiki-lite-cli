@@ -271,6 +271,7 @@ class SecureStateStore:
         return self._load_keys(passphrase)
 
     def _load_keys(self, passphrase: str) -> tuple[Any, Any, Any]:
+        self._validate_passphrase(passphrase)
         try:
             keys = [
                 serialization.load_pem_private_key(
@@ -716,7 +717,7 @@ class SecureStateStore:
     @staticmethod
     def _validate_passphrase(passphrase: str) -> None:
         if len(passphrase) < 12 or not passphrase.strip():
-            raise StateError("passphrase must contain at least 12 characters")
+            raise ValueError("passphrase must contain at least 12 characters")
 
     def _ensure_directory(self, path: Path) -> None:
         if path.exists():

@@ -4,8 +4,10 @@ import type { LookupFunction } from "node:net";
 import { Agent, fetch as undiciFetch, type Dispatcher } from "undici";
 
 import {
+  InvalidInputError,
   JsonRpcFailure,
   ProtocolResponseError,
+  StateError,
 } from "../application/errors.js";
 import { CLIENT_IDENTIFIER } from "../version.js";
 
@@ -42,6 +44,54 @@ export interface HttpRequestInit {
   readonly pinnedAddress?: string;
   readonly pinnedFamily?: 4 | 6;
   readonly serverHostname?: string;
+}
+
+export function isRetryableTransportError(error: unknown): boolean {
+  if (
+    error instanceof JsonRpcFailure ||
+    error instanceof ProtocolResponseError ||
+    error instanceof InvalidInputError ||
+    error instanceof StateError
+  ) {
+    return false;
+  }
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const tokens = collectErrorTokens(error);
+  if (
+    tokens.some((token) =>
+      /^(ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|EPIPE|EHOSTUNREACH|UND_ERR_|HeadersTimeoutError|BodyTimeoutError|ConnectTimeoutError|SocketError)$/i.test(
+        token,
+      ),
+    )
+  ) {
+    return true;
+  }
+  return (
+    error.name === "TypeError" && /fetch|network|socket/i.test(error.message)
+  );
+}
+
+function collectErrorTokens(error: Error): string[] {
+  const tokens: string[] = [error.name];
+  let current: unknown = error;
+  for (let index = 0; index < 4 && current && typeof current === "object";) {
+    const record = current as {
+      code?: unknown;
+      cause?: unknown;
+      name?: unknown;
+    };
+    if (typeof record.code === "string") {
+      tokens.push(record.code);
+    }
+    if (typeof record.name === "string") {
+      tokens.push(record.name);
+    }
+    current = record.cause;
+    index += 1;
+  }
+  return tokens;
 }
 
 export function fixedAddressLookup(

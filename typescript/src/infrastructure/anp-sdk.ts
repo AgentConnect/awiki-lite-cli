@@ -17,11 +17,17 @@ import {
   buildVnextDidDocument,
   createDidDocument,
   createProof,
+  extractPublicKey,
+  findVerificationMethod,
   generateHttpSignatureHeaders,
   generateRfc9421OriginProof,
   validateDeviceManifest,
   validateDidBinding,
+  verifyW3cProof,
 } from "@awiki/anp-typescript-sdk";
+import { validateWbaDid } from "../domain/validation.js";
+import { pinHttpsUrl, pinnedHeaders } from "./safe-network.js";
+import type { HttpClient } from "./rpc.js";
 
 export const ATTACHMENT_PROFILE = "anp.attachment.v1";
 export const CANONICAL_MANIFEST_PROFILES = [
@@ -209,6 +215,136 @@ export function verifyResolvedDocument(
   const proof = document.proof;
   if (typeof proof !== "object" || proof === null) {
     throw new Error("DID document proof is missing");
+  }
+  const methodId = (proof as Record<string, unknown>).verificationMethod;
+  if (typeof methodId !== "string" || !methodId) {
+    throw new Error("DID document proof method is missing");
+  }
+  const method = findVerificationMethod(document as never, methodId);
+  try {
+    if (!method || !verifyW3cProof(document, extractPublicKey(method))) {
+      throw new Error("DID document proof verification failed");
+    }
+  } catch (error) {
+    throw new Error("DID document proof verification failed", { cause: error });
+  }
+}
+
+export function didDocumentUrl(did: string): string {
+  const validated = validateWbaDid(did);
+  const parts = validated.split(":");
+  const domain = decodeURIComponent(parts[2] ?? "");
+  const segments = parts
+    .slice(3)
+    .map((segment) => encodeURIComponent(decodeURIComponent(segment)));
+  return segments.length
+    ? `https://${domain}/${segments.join("/")}/did.json`
+    : `https://${domain}/.well-known/did.json`;
+}
+
+export function selectAttachmentServiceDid(
+  senderDid: string,
+  document: Record<string, unknown>,
+): string {
+  if (document.id !== senderDid) {
+    throw new Error("resolved attachment sender DID document does not match");
+  }
+  const services = document.service;
+  if (!Array.isArray(services)) {
+    throw new Error("attachment sender DID document has no compatible service");
+  }
+  const candidates: Array<[number, number, string]> = [];
+  services.forEach((raw, index) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      return;
+    }
+    const item = raw as Record<string, unknown>;
+    if (item.type !== "ANPMessageService") {
+      return;
+    }
+    const profiles = item.profiles;
+    const security = item.securityProfiles ?? item.security_profiles;
+    const serviceDid = item.serviceDid;
+    const endpoint = item.serviceEndpoint;
+    if (
+      !Array.isArray(profiles) ||
+      !profiles.includes(ATTACHMENT_PROFILE) ||
+      !Array.isArray(security) ||
+      !security.includes("transport-protected") ||
+      typeof serviceDid !== "string" ||
+      serviceDid.split(":").length < 3 ||
+      !serviceDid.startsWith("did:wba:") ||
+      typeof endpoint !== "string" ||
+      !safeHttpsEndpoint(endpoint)
+    ) {
+      return;
+    }
+    const priority = item.priority;
+    const rank = typeof priority === "number" ? priority : 2 ** 31 - 1;
+    candidates.push([rank, index, serviceDid]);
+  });
+  if (!candidates.length) {
+    throw new Error("attachment sender DID document has no compatible service");
+  }
+  candidates.sort((left, right) =>
+    left[0] === right[0] ? left[1] - right[1] : left[0] - right[0],
+  );
+  const selected = candidates[0];
+  if (!selected) {
+    throw new Error("attachment sender DID document has no compatible service");
+  }
+  return selected[2];
+}
+
+export async function resolveAttachmentServiceDid(
+  senderDid: string,
+  client: HttpClient,
+  options: { allowPrivateNetwork?: boolean } = {},
+): Promise<string> {
+  validateWbaDid(senderDid, "attachment sender DID");
+  try {
+    const target = await pinHttpsUrl(didDocumentUrl(senderDid), {
+      field: "attachment sender DID URL",
+      allowPrivateNetwork: options.allowPrivateNetwork === true,
+    });
+    const response = await client.get(target.url, {
+      headers: pinnedHeaders(target, { Accept: "application/json" }),
+      pinnedAddress: target.address,
+      pinnedFamily: target.family,
+      serverHostname: target.serverHostname,
+    });
+    if (!response.ok) {
+      throw new Error("unable to resolve the attachment sender DID document");
+    }
+    const document = await response.json();
+    if (
+      typeof document !== "object" ||
+      document === null ||
+      Array.isArray(document)
+    ) {
+      throw new Error("unable to resolve the attachment sender DID document");
+    }
+    const record = document as Record<string, unknown>;
+    verifyResolvedDocument(senderDid, record);
+    return selectAttachmentServiceDid(senderDid, record);
+  } catch {
+    throw new Error("unable to resolve the attachment sender DID document");
+  }
+}
+
+function safeHttpsEndpoint(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return (
+      parsed.protocol === "https:" &&
+      Boolean(parsed.hostname) &&
+      !parsed.username &&
+      !parsed.password &&
+      !parsed.search &&
+      !parsed.hash
+    );
+  } catch {
+    return false;
   }
 }
 

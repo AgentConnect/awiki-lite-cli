@@ -199,7 +199,10 @@ class MessageService:
             if not isinstance(advertised, list) or required not in advertised:
                 raise RuntimeError(f"message service does not advertise required {required}")
         policies = result.get("proof_policies")
-        if not isinstance(policies, dict) or policies.get("direct_base_origin_proof") != "required":
+        if not isinstance(policies, dict) or policies.get("direct_base_origin_proof") not in {
+            "required",
+            "required_for_canonical_local_and_cross_domain",
+        }:
             raise RuntimeError("message service does not advertise the required Direct Base proof")
 
     async def bootstrap_sync(
@@ -288,7 +291,12 @@ class MessageService:
         value = _object(result)
         meta = params["meta"]
         required = {"accepted", "message_id", "operation_id", "target_did", "accepted_at"}
-        if not required.issubset(value) or value["accepted"] is not True:
+        if (
+            not required.issubset(value)
+            or value["accepted"] is not True
+            or not isinstance(value["accepted_at"], str)
+            or not value["accepted_at"]
+        ):
             raise RuntimeError("service returned an invalid direct.send result")
         if (
             value["message_id"] != meta["message_id"]
@@ -301,7 +309,7 @@ class MessageService:
             identity.identity.did,
             recipient,
             text,
-            str(value["accepted_at"]),
+            value["accepted_at"],
         )
 
     async def send_attachment(
@@ -345,7 +353,12 @@ class MessageService:
         value = _object(result)
         meta = params["meta"]
         required = {"accepted", "message_id", "operation_id", "target_did", "accepted_at"}
-        if not required.issubset(value) or value["accepted"] is not True:
+        if (
+            not required.issubset(value)
+            or value["accepted"] is not True
+            or not isinstance(value["accepted_at"], str)
+            or not value["accepted_at"]
+        ):
             raise RuntimeError("service returned an invalid direct.send result")
         if (
             value["message_id"] != meta["message_id"]

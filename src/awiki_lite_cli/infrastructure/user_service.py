@@ -26,12 +26,17 @@ class UserService:
         self.base_url = base_url.rstrip("/")
 
     async def validate_handle(self, handle: str, domain: str) -> dict[str, Any]:
-        result = await call_json_rpc(
-            self.client,
-            self.base_url + "/user-service/v1/handle/rpc",
-            "validate",
-            {"handle": handle, "domain": domain},
-        )
+        try:
+            result = await call_json_rpc(
+                self.client,
+                self.base_url + "/user-service/v1/handle/rpc",
+                "validate",
+                {"handle": handle, "domain": domain},
+            )
+        except JsonRpcFailure as exc:
+            if exc.code == -32601 and exc.message == "method_not_found":
+                return {"available": True, "validation_deferred": True}
+            raise
         return _object(result)
 
     async def send_registration_otp(self, handle: str, domain: str, phone: str) -> bool:
