@@ -138,6 +138,20 @@ describe("registration and session", () => {
     ).rejects.toBeInstanceOf(JsonRpcFailure);
   });
 
+  test("Open Server can defer handle availability to registration", async () => {
+    const service = new UserService(
+      {
+        async post() {
+          throw new JsonRpcFailure(-32601, "method_not_found");
+        },
+      } as never,
+      "https://example.test",
+    );
+    await expect(
+      service.validateHandle("alice", "example.test"),
+    ).resolves.toEqual({ available: true, validation_deferred: true });
+  });
+
   test("session refresh uses frozen client header and 401 does not delete session.json", async () => {
     const root = tempDir();
     const store = new SecureStateStore(root);

@@ -100,6 +100,7 @@ describe("streaming attachments", () => {
           uploadHeaders: { "x-anp-upload-token": "tok" },
           objectUri: "https://example.com/objects/blob",
           commitToken: "commit",
+          expiresAt: "2099-01-01T00:00:00Z",
         },
         prepared,
       );
@@ -210,8 +211,11 @@ describe("streaming attachments", () => {
     );
   });
 
-  test("create_slot uses the frozen RPC name", async () => {
+  test("create_slot uses the frozen RPC name and rejects unsafe upload headers", async () => {
     const methods: string[] = [];
+    let uploadHeaders: Record<string, unknown> = {
+      "x-anp-upload-token": "tok",
+    };
     const client: HttpClient = {
       async post(_url, init) {
         const body = JSON.parse(String(init.body)) as {
@@ -221,11 +225,13 @@ describe("streaming attachments", () => {
         methods.push(body.method);
         return okJson(
           {
+            attachment_id: "att-1",
             slot_id: "slot-1",
             upload_uri: "https://example.com/upload",
-            upload_headers: { "x-anp-upload-token": "tok" },
+            upload_headers: uploadHeaders,
             object_uri: "https://example.com/objects/blob",
             commit_token: "commit",
+            expires_at: "2099-01-01T00:00:00Z",
           },
           body.id,
         );
@@ -246,32 +252,43 @@ describe("streaming attachments", () => {
     const prepared = prepareFile(path, 1024);
     const service = new AttachmentService(client, "https://example.com");
     try {
-      const slot = await service.createSlot(
-        {
-          identity: {
-            did: "did:wba:example.com:user:alice:e1_alice",
-            handle: "alice.example.com",
-            verificationMethod: "did:wba:example.com:user:alice:e1_alice#key-1",
-            deviceId: "dev-1",
-            didDocument: {},
+      const createSlot = () =>
+        service.createSlot(
+          {
+            identity: {
+              did: "did:wba:example.com:user:alice:e1_alice",
+              handle: "alice.example.com",
+              verificationMethod:
+                "did:wba:example.com:user:alice:e1_alice#key-1",
+              deviceId: "dev-1",
+              didDocument: {},
+            },
+            session: { accessToken: "tok" },
+            rootPrivateKeyPem: "x",
+            deviceSigningPrivateKeyPem: "x",
+            deviceAgreementPrivateKeyPem: "x",
           },
-          session: { accessToken: "tok" },
-          rootPrivateKeyPem: "x",
-          deviceSigningPrivateKeyPem: "x",
-          deviceAgreementPrivateKeyPem: "x",
-        },
-        "did:wba:example.com:service:attachment:e1_svc",
-        "att-1",
-        prepared,
-        "agent",
-        "did:wba:example.com:user:bob:e1_bob",
-        "op-create",
-        "2026-01-01T00:00:00Z",
-      );
+          "did:wba:example.com:service:attachment:e1_svc",
+          "att-1",
+          prepared,
+          "agent",
+          "did:wba:example.com:user:bob:e1_bob",
+          "op-create",
+          "2026-01-01T00:00:00Z",
+        );
+      const slot = await createSlot();
       expect(slot.uploadUri).toBe("https://example.com/upload");
+      uploadHeaders = { "x-forbidden": "secret" };
+      await expect(createSlot()).rejects.toThrow(/forbidden upload header/);
+      uploadHeaders = { "x-anp-upload-token": null };
+      await expect(createSlot()).rejects.toThrow(/invalid upload header/);
     } finally {
       prepared.close();
     }
-    expect(methods).toEqual(["attachment.create_slot"]);
+    expect(methods).toEqual([
+      "attachment.create_slot",
+      "attachment.create_slot",
+      "attachment.create_slot",
+    ]);
   });
 });

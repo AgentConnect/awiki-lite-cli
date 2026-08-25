@@ -86,6 +86,30 @@ def test_direct_builder_rejects_invalid_inputs() -> None:
         build_direct_send(unlocked(), "did:wba:example.test:user:bob", "   ")
 
 
+@pytest.mark.asyncio
+async def test_direct_send_rejects_non_string_accepted_at() -> None:
+    identity = unlocked()
+    recipient = "did:wba:example.test:user:bob:e1_fixture"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        meta = body["params"]["meta"]
+        result = {
+            "accepted": True,
+            "message_id": meta["message_id"],
+            "operation_id": meta["operation_id"],
+            "target_did": recipient,
+            "accepted_at": None,
+        }
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError, match="invalid direct.send"):
+            await MessageService(client, "https://example.test").send(
+                identity, recipient, "hello", preflight=False
+            )
+
+
 def test_read_builders_use_local_profiles_without_auth() -> None:
     did = "did:wba:example.test:user:alice:e1_fixture"
     assert build_mark_read(did, ["m1"])["body"]["message_ids"] == ["m1"]
@@ -102,6 +126,26 @@ def test_read_builders_use_local_profiles_without_auth() -> None:
     assert capabilities["meta"]["profile"] == "anp.core.binding.v1"
     assert capabilities["meta"]["sender_did"] == did
     assert capabilities["body"] == {}
+
+
+@pytest.mark.asyncio
+async def test_direct_preflight_accepts_open_server_proof_policy() -> None:
+    identity = unlocked()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        result = {
+            "supported_profiles": ["anp.direct.base.v1"],
+            "supported_security_profiles": ["transport-protected"],
+            "supported_content_types": ["text/plain"],
+            "proof_policies": {
+                "direct_base_origin_proof": "required_for_canonical_local_and_cross_domain"
+            },
+        }
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await MessageService(client, "https://example.test").ensure_direct_base(identity)
 
 
 def test_sync_bootstrap_builder_matches_v2_contract() -> None:

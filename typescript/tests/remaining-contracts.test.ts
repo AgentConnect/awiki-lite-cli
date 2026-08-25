@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, test } from "vitest";
 
 import { parseManifest } from "../src/infrastructure/attachment-manifest.js";
@@ -11,6 +15,8 @@ import {
   DEFAULT_SERVICE_URL,
   DEFAULT_STATE_APPNAME,
 } from "../src/config.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 describe("remaining TypeScript contracts", () => {
   test("default appname remains isolated from Python state", () => {
@@ -48,6 +54,15 @@ describe("remaining TypeScript contracts", () => {
         },
       ),
     ).not.toThrow();
+  });
+
+  test("direct read commands never auto-bootstrap sync", () => {
+    const source = readFileSync(
+      join(here, "../src/commands/direct.ts"),
+      "utf8",
+    );
+    expect(source).not.toContain("bootstrapSync");
+    expect(source).not.toContain("initializeSync");
   });
 
   test("manifest still rejects extra attachment keys", () => {

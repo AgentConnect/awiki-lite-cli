@@ -76,7 +76,7 @@ def test_symlink_target_and_secret_pending_fields_are_rejected(tmp_path: Path) -
 
 def test_short_passphrase_is_rejected_without_writes(tmp_path: Path) -> None:
     store = SecureStateStore(tmp_path / "state")
-    with pytest.raises(StateError, match="12"):
+    with pytest.raises(ValueError, match="12"):
         store.save_registration(identity(), "token", keys(), "short")
     assert not store.exists
 

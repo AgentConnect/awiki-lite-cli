@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 
-import { validatePublicHostname } from "../src/domain/validation.js";
+import {
+  validatePublicHostname,
+  validateWbaDid,
+} from "../src/domain/validation.js";
 
 describe("public hostname validation", () => {
   test("accepts canonical ASCII DNS names", () => {
@@ -18,5 +21,11 @@ describe("public hostname validation", () => {
     "EXAMPLE.COM",
   ])("rejects unsafe hostname %j", (hostname) => {
     expect(() => validatePublicHostname(hostname)).toThrow();
+  });
+
+  test("rejects mixed-case DID hosts", () => {
+    expect(() => validateWbaDid("did:wba:Example.com:user:bob")).toThrow(
+      /canonical lowercase/,
+    );
   });
 });

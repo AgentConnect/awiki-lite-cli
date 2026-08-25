@@ -8,7 +8,12 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from awiki_lite_cli.domain.models import IdentityState
+from awiki_lite_cli.domain.models import (
+    AttachmentContext,
+    AttachmentRef,
+    AuthenticatedIdentity,
+    IdentityState,
+)
 from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
 from awiki_lite_cli.infrastructure.attachment_manifest import MANIFEST_CONTENT_TYPE
 from awiki_lite_cli.infrastructure.attachment_service import (
@@ -168,6 +173,9 @@ def test_prepare_file_accepts_empty_and_rejects_unsafe_or_changed_files(tmp_path
     link.symlink_to(oversized)
     with pytest.raises(ValueError, match="regular file"):
         prepare_file(link, 100)
+
+    with pytest.raises(ValueError, match="unavailable"):
+        prepare_file(tmp_path / "missing.bin", 100)
 
 
 def test_prepare_file_reads_control_z_as_binary_data(tmp_path: Path) -> None:
@@ -405,3 +413,132 @@ async def test_rfc3339_nanosecond_slot_expiry_is_accepted(tmp_path: Path) -> Non
             await AttachmentService(
                 client, "https://message.example.test", address_resolver=public_dns
             ).upload(slot, prepared)
+
+
+@pytest.mark.asyncio
+async def test_capabilities_accept_open_server_attachment_byte_limit(
+    tmp_path: Path,
+) -> None:
+    identity = unlocked_store(tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        result = {**capability_result(), "limits": {"max_attachment_bytes": "10485760"}}
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        caps = await AttachmentService(client, "https://message.example.test").capabilities(
+            identity
+        )
+    assert caps.max_object_bytes == 10485760
+
+
+@pytest.mark.asyncio
+async def test_open_server_attachment_control_responses_are_accepted(tmp_path: Path) -> None:
+    identity = unlocked_store(tmp_path)
+    raw = b"open server attachment"
+    path = tmp_path / "open.txt"
+    path.write_bytes(raw)
+    attachment_id = "att-open"
+    object_uri = "https://objects.example.test/objects/object-open"
+    expires_at = "2099-08-06T00:10:00Z"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        method = body["method"]
+        if method == "attachment.create_slot":
+            result = {
+                "attachment_id": attachment_id,
+                "slot_id": "slot-open",
+                "object_id": "object-open",
+                "upload_token": "upload-open",
+                "upload_headers": {"X-ANP-Upload-Token": "upload-open"},
+                "commit_token": "commit-open",
+                "upload_url": "https://objects.example.test/objects/upload/slot-open",
+                "upload_uri": "https://objects.example.test/objects/upload/slot-open",
+                "object_uri": object_uri,
+                "expires_at": expires_at,
+                "expected_size": len(raw),
+                "expected_digest": {"alg": "sha-256", "value_b64u": digest(raw)},
+                "content_type": "text/plain",
+            }
+        elif method == "attachment.commit_object":
+            result = {
+                "committed": True,
+                "attachment_id": attachment_id,
+                "slot_id": "slot-open",
+                "object_id": "object-open",
+                "object_uri": object_uri,
+                "committed_at": "2099-08-06T00:01:00Z",
+                "size": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "digest": {"alg": "sha-256", "value_b64u": digest(raw)},
+                "content_type": "text/plain",
+            }
+        else:
+            request_body = body["params"]["body"]
+            ticket = "ticket-open"
+            result = {
+                "ticket": ticket,
+                "download_ticket_b64u": ticket,
+                "object_id": "object-open",
+                "attachment_id": attachment_id,
+                "download_url": "https://objects.example.test/objects/object-open?ticket=ticket-open",
+                "download_uri": "https://objects.example.test/objects/object-open?ticket=ticket-open",
+                "download_headers": {"Authorization": f"Bearer {ticket}"},
+                "ticket_binding": {
+                    **{key: value for key, value in request_body.items() if key != "one_time"},
+                    "sender_did": TARGET_DID,
+                },
+                "expires_at": expires_at,
+            }
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async def resolve_service(_sender_did: str) -> str:
+        return SERVICE_DID
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        service = AttachmentService(
+            client,
+            "https://message.example.test",
+            service_resolver=resolve_service,
+            address_resolver=public_dns,
+        )
+        with prepare_file(path, 1024) as prepared:
+            slot = await service.create_slot(
+                identity,
+                SERVICE_DID,
+                attachment_id,
+                prepared,
+                "agent",
+                identity.identity.did,
+                "create-open",
+                "2026-08-06T00:00:00Z",
+            )
+            committed = await service.commit(
+                identity,
+                SERVICE_DID,
+                slot,
+                prepared,
+                "commit-open",
+                "2026-08-06T00:00:00Z",
+            )
+        context = AttachmentContext(
+            "message-open",
+            TARGET_DID,
+            identity.identity.did,
+            None,
+            AttachmentRef(
+                attachment_id,
+                object_uri,
+                "open.txt",
+                "text/plain",
+                len(raw),
+                digest(raw),
+            ),
+        )
+        ticket = await service.get_download_ticket(
+            AuthenticatedIdentity(identity.identity, identity.session), context
+        )
+    assert committed.attachment.object_uri == object_uri
+    assert ticket.value == "ticket-open"

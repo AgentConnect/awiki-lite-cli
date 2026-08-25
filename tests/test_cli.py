@@ -214,6 +214,18 @@ def test_msg_send_dispatches_direct_group_and_attachment(monkeypatch, tmp_path: 
     ]
 
 
+def test_numeric_options_report_invalid_input() -> None:
+    for args in (
+        ["msg", "inbox", "--limit", "-1"],
+        ["msg", "history", "--with", "bob", "--limit", "1.5"],
+        ["group", "list", "--limit", "NaN"],
+        ["group", "messages", "--group", "did:wba:example.test:group:a", "--since-seq", "-1"],
+    ):
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2, args
+        assert "Invalid input" in result.stderr
+
+
 def test_register_input_error_uses_exit_two(monkeypatch) -> None:
     async def invalid(handle: str, phone: str):  # type: ignore[no-untyped-def]
         raise ValueError("invalid handle")

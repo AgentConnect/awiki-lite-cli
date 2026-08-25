@@ -38,6 +38,13 @@ describe("parse_manifest", () => {
     expect(() => parseManifest(manifest)).toThrow(/invalid attachment size/);
   });
 
+  test("rejects an attachment size that JavaScript cannot represent exactly", () => {
+    const manifest = buildManifest(ref, null) as Record<string, unknown>;
+    const attachments = manifest.attachments as Array<Record<string, unknown>>;
+    attachments[0]!.size = "9007199254740993";
+    expect(() => parseManifest(manifest)).toThrow(/invalid attachment size/);
+  });
+
   test("normalizeCaption enforces 4096", () => {
     expect(normalizeCaption(null)).toBeNull();
     expect(() => normalizeCaption("x".repeat(4097))).toThrow(/4096/);

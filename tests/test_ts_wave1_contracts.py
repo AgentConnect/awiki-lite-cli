@@ -74,8 +74,11 @@ def test_typescript_package_pins_published_sdk() -> None:
 
 def test_python_packaging_is_unchanged() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    init = (ROOT / "src/awiki_lite_cli/__init__.py").read_text(encoding="utf-8")
     assert 'packages = ["src/awiki_lite_cli"]' in pyproject
     assert (ROOT / "src/awiki_lite_cli/cli.py").is_file()
+    assert 'CLIENT_IDENTIFIER = "awiki-cli/0714/0.2.0"' in init
+    assert "CLIENT_IDENTIFIER = f" not in init
 
 
 def test_read_commands_never_infer_sync_migration_from_empty_pages() -> None:

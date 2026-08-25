@@ -35,6 +35,7 @@ def test_generated_identity_has_one_server_compatible_device() -> None:
     assert "anp.group.base.v1" in message_service["profiles"]
     assert ATTACHMENT_PROFILE in message_service["profiles"]
     assert message_service["serviceDid"] == "did:wba:example.test"
+    assert message_service["serviceEndpoint"] == "https://example.test/anp-im/rpc"
 
 
 def test_attachment_service_selection_requires_exact_plain_profile() -> None:

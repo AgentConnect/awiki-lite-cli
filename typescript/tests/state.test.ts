@@ -1,5 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import {
   chmodSync,
   existsSync,
@@ -12,7 +13,10 @@ import { join } from "node:path";
 
 import { describe, expect, test } from "vitest";
 
-import { StateError } from "../src/application/errors.js";
+import {
+  InvalidInputError,
+  InvalidPassphraseError,
+} from "../src/application/errors.js";
 import {
   SecureStateStore,
   validatePassphrase,
@@ -51,14 +55,68 @@ function keyPems() {
 }
 
 describe("state store", () => {
+  test("waits for another process to release the state lock", async () => {
+    const root = tempDir();
+    const store = new SecureStateStore(root);
+    store.initialize();
+    const child = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+          import { closeSync, openSync } from "node:fs";
+          import { flockSync } from "fs-ext";
+          const fd = openSync(process.env.AWIKI_TEST_LOCK, "a+");
+          flockSync(fd, "ex");
+          process.stdout.write("locked\\n");
+          setTimeout(() => {
+            flockSync(fd, "un");
+            closeSync(fd);
+          }, 400);
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, AWIKI_TEST_LOCK: join(root, ".lock") },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    const exited = once(child, "exit") as Promise<[number | null]>;
+    await once(child.stdout, "data");
+    const started = Date.now();
+    store.lock(() => undefined);
+    const elapsed = Date.now() - started;
+    const [status] = await exited;
+    expect(status, stderr).toBe(0);
+    expect(elapsed).toBeGreaterThanOrEqual(250);
+  });
+
   test("rejects short passphrases without writes", () => {
     const root = tempDir();
     const store = new SecureStateStore(root);
-    expect(() => validatePassphrase("short")).toThrow(StateError);
+    expect(() => validatePassphrase("short")).toThrow(InvalidInputError);
     expect(() =>
       store.stageRegistration(sampleIdentity(), keyPems(), "short"),
     ).toThrow(/at least 12 characters/);
     expect(existsSync(join(root, "pending-registration.json"))).toBe(false);
+  });
+
+  test("wrong long passphrases remain local-state failures", () => {
+    const store = new SecureStateStore(tempDir());
+    store.stageRegistration(
+      sampleIdentity(),
+      keyPems(),
+      "correct long passphrase",
+    );
+    expect(() => store.unlockPendingKeys("another long passphrase")).toThrow(
+      InvalidPassphraseError,
+    );
   });
 
   test("pending values ban is key-name only", () => {

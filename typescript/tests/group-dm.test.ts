@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { describe, expect, test } from "vitest";
 
-import { GroupWorkflow } from "../src/application/groups.js";
+import { GroupWorkflow, inputDigest } from "../src/application/groups.js";
 import { stableValues } from "../src/application/attachments.js";
 import {
   renderDirectMessages,
@@ -182,7 +182,7 @@ describe("group messages and dm attachment contexts", () => {
       session: unlocked.session,
     };
     const methods: string[] = [];
-    const client = jsonRpcClient((method) => {
+    const client = jsonRpcClient((method, params) => {
       methods.push(method);
       if (method === "anp.get_capabilities") {
         return {
@@ -194,14 +194,41 @@ describe("group messages and dm attachment contexts", () => {
         };
       }
       if (method === "group.create") {
+        const meta = params.meta as { operation_id: string };
+        expect(
+          (
+            params.body as {
+              group_policy: { max_members: string };
+            }
+          ).group_policy.max_members,
+        ).toBe("500");
         return {
-          accepted: true,
           group_did: GROUP_DID,
           group_state_version: "1",
           group_event_seq: "1",
           created_at: "now",
           creator_did: unlocked.identity.did,
           group_profile: { display_name: "Fixture" },
+          group_receipt: {
+            subject_method: "group.create",
+            group_did: GROUP_DID,
+            operation_id: meta.operation_id,
+          },
+        };
+      }
+      if (method === "group.add") {
+        const meta = params.meta as { operation_id: string };
+        return {
+          group_did: GROUP_DID,
+          member_did: MEMBER_DID,
+          membership_status: "active",
+          group_state_version: "2",
+          group_event_seq: "2",
+          group_receipt: {
+            subject_method: "group.add",
+            group_did: GROUP_DID,
+            operation_id: meta.operation_id,
+          },
         };
       }
       if (method === "group.list") {
@@ -300,6 +327,14 @@ describe("group messages and dm attachment contexts", () => {
     );
     expect(created.displayName).toBe("Fixture");
     expect(created.groupDid).toBe(GROUP_DID);
+    await expect(
+      service.add(
+        unlocked,
+        GROUP_DID,
+        MEMBER_DID,
+        pending("group.add", GROUP_DID),
+      ),
+    ).resolves.toBe(MEMBER_DID);
     const [groups, cursor] = await service.listGroups(authenticated, 20, null);
     expect(groups).toHaveLength(1);
     expect(groups[0]?.displayName).toBe("Fixture");
@@ -325,12 +360,87 @@ describe("group messages and dm attachment contexts", () => {
     expect(nextSeq).toBe(5);
     expect(methods).toEqual([
       "group.create",
+      "group.add",
       "group.list",
       "group.get_info",
       "group.list_members",
       "group.list_messages",
     ]);
     void MEMBER_DID;
+  });
+
+  test.each([
+    {
+      name: "resumes the legacy default digest",
+      advertised: null,
+      expected: "500",
+      resume: true,
+    },
+    {
+      name: "uses the advertised lower member cap",
+      advertised: "100",
+      expected: "100",
+      resume: false,
+    },
+  ])("group create $name", async ({ advertised, expected, resume }) => {
+    const unlocked = unlockedFixture();
+    const store = new SecureStateStore(tempDir());
+    const legacy = resume
+      ? store.prepareOperation(
+          "group.create",
+          SERVICE_DID,
+          inputDigest({ display_name: "Room" }),
+          { needsMessageId: false },
+        )
+      : null;
+    const client = jsonRpcClient((method, params) => {
+      if (method === "anp.get_capabilities") {
+        return {
+          service_did: SERVICE_DID,
+          supported_profiles: ["anp.group.base.v1"],
+          supported_security_profiles: ["transport-protected"],
+          supported_content_types: ["text/plain"],
+          ...(advertised === null
+            ? {}
+            : {
+                features: {
+                  group_participant: { max_members: advertised },
+                },
+              }),
+        };
+      }
+      if (method !== "group.create") {
+        throw new Error(`unexpected method ${method}`);
+      }
+      const meta = params.meta as { operation_id: string };
+      if (legacy !== null) {
+        expect(meta.operation_id).toBe(legacy.operationId);
+      }
+      expect(
+        (
+          params.body as {
+            group_policy: { max_members: string };
+          }
+        ).group_policy.max_members,
+      ).toBe(expected);
+      return {
+        group_did: GROUP_DID,
+        group_state_version: "1",
+        group_event_seq: "1",
+        created_at: "now",
+        group_profile: { display_name: "Room" },
+        group_receipt: {
+          subject_method: method,
+          group_did: GROUP_DID,
+          operation_id: meta.operation_id,
+        },
+      };
+    });
+    const result = await new GroupWorkflow(
+      new GroupService(client, "https://example.test"),
+      store,
+    ).create(unlocked, "Room");
+    expect(result.groupDid).toBe(GROUP_DID);
   });
 
   test("group info without group_profile.display_name fails closed", async () => {

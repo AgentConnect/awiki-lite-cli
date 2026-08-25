@@ -75,6 +75,26 @@ async def test_open_server_otp_exemption_requires_all_three_fields() -> None:
 
 
 @pytest.mark.asyncio
+async def test_open_server_can_defer_handle_availability_to_registration() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = __import__("json").loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "error": {"code": -32601, "message": "method_not_found"},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await UserService(client, "https://example.test").validate_handle(
+            "alice", "example.test"
+        )
+    assert result == {"available": True, "validation_deferred": True}
+
+
+@pytest.mark.asyncio
 async def test_registration_flow_sends_scoped_otp_and_persists(tmp_path: Path) -> None:
     methods: list[tuple[str, dict]] = []
 

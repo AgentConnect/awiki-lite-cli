@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts import test_all
+import httpx
+import pytest
+
+from awiki_lite_cli.application.attachments import AttachmentWorkflow
+from awiki_lite_cli.application.groups import GroupWorkflow
+from awiki_lite_cli.infrastructure.state import SecureStateStore
+from scripts import remote_group_attachment_e2e, test_all
 
 
 def test_combined_runner_uses_only_independent_commands(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -35,3 +41,13 @@ def test_combined_runner_runs_both_suites_before_reporting_failure(monkeypatch) 
 
     assert test_all.main() == 1
     assert labels == ["Python independent tests", "TypeScript independent tests"]
+
+
+@pytest.mark.asyncio
+async def test_remote_group_e2e_workflows_follow_production_signatures(tmp_path: Path) -> None:
+    store = SecureStateStore(tmp_path / "state")
+    async with httpx.AsyncClient() as client:
+        assert isinstance(
+            remote_group_attachment_e2e._attachments(client, store), AttachmentWorkflow
+        )
+        assert isinstance(remote_group_attachment_e2e._groups(client, store), GroupWorkflow)
