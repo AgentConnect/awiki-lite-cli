@@ -8,7 +8,7 @@ from awiki_lite_cli.application.registration import (
     normalize_handle,
     normalize_phone,
 )
-from awiki_lite_cli.domain.models import SyncBootstrapState
+from awiki_lite_cli.domain.models import AuthenticatedIdentity, SessionState, SyncBootstrapState
 from awiki_lite_cli.infrastructure.anp_sdk import generate_identity
 from awiki_lite_cli.infrastructure.rpc import JsonRpcFailure
 from awiki_lite_cli.infrastructure.state import SecureStateStore
@@ -16,11 +16,14 @@ from awiki_lite_cli.infrastructure.user_service import UserService
 
 
 class FakeSyncService:
-    def __init__(self) -> None:
+    def __init__(self, failure: Exception | None = None) -> None:
         self.client_instance_ids: list[str] = []
+        self.failure = failure
 
     async def bootstrap_sync(self, identity, client_instance_id):  # type: ignore[no-untyped-def]
         self.client_instance_ids.append(client_instance_id)
+        if self.failure is not None:
+            raise self.failure
         return SyncBootstrapState(
             "fixture-account",
             identity.identity.device_id,
@@ -28,6 +31,18 @@ class FakeSyncService:
             "1",
             "0",
         )
+
+
+class AcceptedRegistrationService:
+    base_url = "https://example.test"
+
+    def __init__(self) -> None:
+        self.register_dids: list[str] = []
+
+    async def register(self, document, handle, phone, otp):  # type: ignore[no-untyped-def]
+        did = str(document["id"])
+        self.register_dids.append(did)
+        return {"state": "registered", "did": did, "access_token": "fixture-token"}
 
 
 def test_registration_input_normalization() -> None:
@@ -185,3 +200,40 @@ async def test_registration_response_loss_reuses_staged_identity(tmp_path: Path)
     assert register_dids == [identity.did, identity.did]
     assert len(sync.client_instance_ids) == 1
     assert store.exists
+
+
+@pytest.mark.asyncio
+async def test_sync_failure_leaves_registration_recoverable(tmp_path: Path) -> None:
+    store = SecureStateStore(tmp_path / "state")
+    service = AcceptedRegistrationService()
+    sync = FakeSyncService(TimeoutError("sync timeout"))
+    flow = RegistrationWorkflow(
+        service,
+        sync,
+        store,
+        "https://example.test",
+        generate_identity,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="registered locally.*run id init-sync") as caught:
+        await flow.finish(
+            "alice", "+15555550100", "example.test", "123456", "long passphrase value"
+        )
+
+    assert isinstance(caught.value.__cause__, TimeoutError)
+    identity = store.load_public()
+    session = store.load_session()
+    assert service.register_dids == [identity.did]
+    assert session.access_token == "fixture-token"
+    assert store.load_pending_identity() is None
+    installation = store.load_sync(identity.did)
+    assert installation is not None and installation.bootstrap is None
+
+    recovery = FakeSyncService()
+    bootstrap = await recovery.bootstrap_sync(
+        AuthenticatedIdentity(identity, SessionState(session.access_token)),
+        installation.client_instance_id,
+    )
+    completed = store.complete_sync_bootstrap(installation, bootstrap)
+    assert completed.bootstrap == bootstrap
+    assert recovery.client_instance_ids == sync.client_instance_ids
