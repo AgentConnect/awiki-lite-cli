@@ -13,6 +13,7 @@ import {
   RegistrationWorkflow,
   registrationDomain,
 } from "../src/application/registration.js";
+import { initializeMessageSync } from "../src/commands/identity.js";
 import {
   generateIdentity,
   generateOriginProof,
@@ -23,6 +24,23 @@ import { CLIENT_IDENTIFIER } from "../src/version.js";
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "awiki-reg-"));
+}
+
+function acceptedRegistrationService(registerDids: string[] = []) {
+  return {
+    baseUrl: "https://example.test",
+    async validateHandle() {
+      return { available: true };
+    },
+    async sendRegistrationOtp() {
+      return true;
+    },
+    async register(document: Record<string, unknown>) {
+      const did = String(document.id);
+      registerDids.push(did);
+      return { state: "registered", did, access_token: "token-1" };
+    },
+  };
 }
 
 describe("registration and session", () => {
@@ -45,26 +63,11 @@ describe("registration and session", () => {
     );
   });
 
-  test("registration bootstraps sync before publishing the identity", async () => {
+  test("registration publishes the identity and bootstraps sync", async () => {
     const root = tempDir();
     const store = new SecureStateStore(root);
     const clientInstanceIds: string[] = [];
-    const userService = {
-      baseUrl: "https://example.test",
-      async validateHandle() {
-        return { available: true };
-      },
-      async sendRegistrationOtp() {
-        return true;
-      },
-      async register(document: Record<string, unknown>) {
-        return {
-          state: "registered",
-          did: String(document.id),
-          access_token: "token-1",
-        };
-      },
-    };
+    const userService = acceptedRegistrationService();
     const syncService = {
       async bootstrapSync(
         authenticated: { identity: { deviceId: string } },
@@ -102,6 +105,55 @@ describe("registration and session", () => {
     expect(store.loadPublic().did).toBe(registered.did);
     expect(installation?.bootstrap?.deviceId).toBe(registered.deviceId);
     expect(clientInstanceIds).toEqual([installation?.clientInstanceId]);
+  });
+
+  test("sync failure leaves registration recoverable by init-sync", async () => {
+    const store = new SecureStateStore(tempDir());
+    const registerDids: string[] = [];
+    const workflow = new RegistrationWorkflow(
+      acceptedRegistrationService(registerDids) as never,
+      {
+        async bootstrapSync() {
+          expect(store.loadPublic().did).toBe(registerDids[0]);
+          expect(store.loadSession().accessToken).toBe("token-1");
+          throw new Error("sync timeout");
+        },
+      } as never,
+      store,
+      "https://example.test",
+      generateIdentity,
+    );
+
+    await expect(
+      workflow.finish(
+        "alice",
+        "+15555550100",
+        "example.test",
+        "123456",
+        "twelve chars!!",
+      ),
+    ).rejects.toThrow(/registered locally.*run id init-sync/);
+
+    const identity = store.loadPublic();
+    expect(registerDids).toEqual([identity.did]);
+    expect(store.loadSession().accessToken).toBe("token-1");
+    expect(store.loadPendingIdentity()).toBeNull();
+    const pendingSync = store.loadSync(identity.did);
+    expect(pendingSync?.bootstrap).toBeNull();
+
+    const recovered = await initializeMessageSync(store, {
+      async bootstrapSync(_identity, clientInstanceId) {
+        expect(clientInstanceId).toBe(pendingSync?.clientInstanceId);
+        return {
+          accountId: "account-1",
+          deviceId: identity.deviceId,
+          serverTime: "2026-08-25T00:00:00Z",
+          streamEpoch: "1",
+          scanSeq: "0",
+        };
+      },
+    } as never);
+    expect(store.loadSync(identity.did)?.bootstrap).toEqual(recovered);
   });
 
   test("OTP exemption requires all three conjuncts", async () => {

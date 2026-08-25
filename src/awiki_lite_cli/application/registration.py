@@ -94,14 +94,20 @@ class RegistrationWorkflow:
         token = result.get("access_token")
         if not isinstance(token, str) or not token:
             raise RuntimeError("registration did not return a device access token")
-        installation = self.store.initialize_sync(identity.did)
-        if installation.bootstrap is None:
-            bootstrap = await self.sync_service.bootstrap_sync(
-                AuthenticatedIdentity(identity, SessionState(token)),
-                installation.client_instance_id,
-            )
-            self.store.complete_sync_bootstrap(installation, bootstrap)
-        elif installation.bootstrap.device_id != identity.device_id:
-            raise RuntimeError("sync installation belongs to another device")
         self.store.finalize_registration(identity, token)
+        try:
+            installation = self.store.initialize_sync(identity.did)
+            if installation.bootstrap is None:
+                bootstrap = await self.sync_service.bootstrap_sync(
+                    AuthenticatedIdentity(identity, SessionState(token)),
+                    installation.client_instance_id,
+                )
+                self.store.complete_sync_bootstrap(installation, bootstrap)
+            elif installation.bootstrap.device_id != identity.device_id:
+                raise RuntimeError("sync installation belongs to another device")
+        except Exception as exc:
+            raise RuntimeError(
+                "identity was registered locally, but message sync initialization failed; "
+                "run id init-sync"
+            ) from exc
         return identity

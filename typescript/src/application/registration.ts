@@ -127,17 +127,24 @@ export class RegistrationWorkflow {
     if (typeof token !== "string" || !token) {
       throw new Error("registration did not return a device access token");
     }
-    const installation = this.store.initializeSync(identity.did);
-    if (installation.bootstrap === null) {
-      const bootstrap = await this.syncService.bootstrapSync(
-        { identity, session: { accessToken: token } },
-        installation.clientInstanceId,
-      );
-      this.store.completeSyncBootstrap(installation, bootstrap);
-    } else if (installation.bootstrap.deviceId !== identity.deviceId) {
-      throw new Error("sync installation belongs to another device");
-    }
     this.store.finalizeRegistration(identity, token);
+    try {
+      const installation = this.store.initializeSync(identity.did);
+      if (installation.bootstrap === null) {
+        const bootstrap = await this.syncService.bootstrapSync(
+          { identity, session: { accessToken: token } },
+          installation.clientInstanceId,
+        );
+        this.store.completeSyncBootstrap(installation, bootstrap);
+      } else if (installation.bootstrap.deviceId !== identity.deviceId) {
+        throw new Error("sync installation belongs to another device");
+      }
+    } catch (error) {
+      throw new Error(
+        "identity was registered locally, but message sync initialization failed; run id init-sync",
+        { cause: error },
+      );
+    }
     return identity;
   }
 }
