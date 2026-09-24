@@ -186,7 +186,7 @@ wheels = [
 
 [[package]]
 name = "anp"
-version = "1.0.3"
+version = "1.0.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -204,9 +204,9 @@ dependencies = [
     { name = "websockets", version = "16.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "websockets", version = "17.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4c/24/cbf5d8badebab3d640ce268b29f9988b6e7b11f415d0f6c627f42854e7f8/anp-1.0.3.tar.gz", hash = "sha256:fe4a5f1f79467512a96f4ff9654fea89200dbca0044b8996a681d97ba82c85b9", size = 210888, upload-time = "2026-09-11T13:17:24.65Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/61/ab/9321ff6d8785a4741658c5b09d8e58627ca6c080e675b728aba082c5ffcb/anp-1.0.5.tar.gz", hash = "sha256:ca1d873ab03c149d6d8827586d39222f604061a1ae0ce5e12914ca99b0989b9b", size = 214783, upload-time = "2026-09-24T12:59:26.544Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/31/90/7caad91bd671930295ec000f77c8645cf7e074438171e69e451b080ebf73/anp-1.0.3-py3-none-any.whl", hash = "sha256:96039aabcaf51e18504555cd9f41990024f9f4810d40c18a45224a53b525303b", size = 269498, upload-time = "2026-09-11T13:17:22.62Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/8e/04422a9ba023f4b5dddef63c7fd80d4ac7f7d9407a36fed18d83019d16aa/anp-1.0.5-py3-none-any.whl", hash = "sha256:f3bba962647a410ecd169f648aa112c62dde5de1da50a3ccc83b49df7f421110", size = 274102, upload-time = "2026-09-24T12:59:24.428Z" },
 ]
 
 [[package]]
@@ -275,7 +275,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anp", specifier = "==1.0.3" },
+    { name = "anp", specifier = "==1.0.5" },
     { name = "cryptography", specifier = ">=45,<47" },
     { name = "httpx", specifier = ">=0.28,<1.0" },
     { name = "platformdirs", specifier = ">=4.3,<5.0" },

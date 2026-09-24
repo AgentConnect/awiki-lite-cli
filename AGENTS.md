@@ -21,7 +21,7 @@ The project uses Python 3.10+ and `uv`.
 - `uv run ruff check .` and `uv run ruff format --check .` enforce style.
 - `uv run mypy src` performs strict type checking; `uv build` verifies packaging.
 
-A parallel TypeScript package lives in `typescript/` (`@awiki/lite-cli`, binary `awiki-lite-ts`) and uses the same `id`/`msg`/`group`/`runtime` command syntax as Python. There is no root npm/pnpm workspace. The ANP TypeScript SDK is pinned to the published npm package `@awiki/anp-typescript-sdk@0.9.3`; contributors do not need a sibling ANP checkout.
+A parallel TypeScript package lives in `typescript/` (`@awiki/lite-cli`, binary `awiki-lite-ts`) and uses the same `id`/`msg`/`group`/`runtime` command syntax as Python. There is no root npm/pnpm workspace. The ANP TypeScript SDK is pinned to the published npm package `@awiki/anp-typescript-sdk@0.9.5`; contributors do not need a sibling ANP checkout.
 
 ```bash
 (cd typescript && pnpm install && pnpm test && pnpm exec awiki-lite-ts --help)

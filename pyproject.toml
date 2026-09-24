@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "AgentConnect" }]
 dependencies = [
-    "anp==1.0.3",
+    "anp==1.0.5",
     "cryptography>=45,<47",
     "httpx>=0.28,<1.0",
     "platformdirs>=4.3,<5.0",

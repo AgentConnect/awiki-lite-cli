@@ -23,7 +23,7 @@
     "postinstall": "node ./scripts/link-bin.mjs"
   },
   "dependencies": {
-    "@awiki/anp-typescript-sdk": "0.9.3",
+    "@awiki/anp-typescript-sdk": "0.9.5",
     "@inquirer/password": "^4.0.0",
     "commander": "^12.1.0",
     "fs-ext": "^2.1.1",

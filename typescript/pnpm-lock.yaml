@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@awiki/anp-typescript-sdk':
-        specifier: 0.9.3
-        version: 0.9.3
+        specifier: 0.9.5
+        version: 0.9.5
       '@inquirer/password':
         specifier: ^4.0.0
         version: 4.0.23(@types/node@20.19.43)
@@ -66,8 +66,8 @@ importers:
 
 packages:
 
-  '@awiki/anp-typescript-sdk@0.9.3':
-    resolution: {integrity: sha512-yFvcVndo9341Va91nijxfqp7NYvhmXll7T/Ey4saKwK7iwc7F8W4fV5/ydpjEd4EIVAa77cPOVvtETGJnqHbsg==}
+  '@awiki/anp-typescript-sdk@0.9.5':
+    resolution: {integrity: sha512-DTU7Su9Vhel0vcibg2vB3GBDXRQHuD/YLrtf8GtF3d7Nm3+lbvasiCC8YC25yPDH8U6zc9xc7wcMQ6jRhNI8Bw==}
     engines: {node: '>=20.0.0'}
 
   '@esbuild/aix-ppc64@0.21.5':
@@ -1305,7 +1305,7 @@ packages:
 
 snapshots:
 
-  '@awiki/anp-typescript-sdk@0.9.3':
+  '@awiki/anp-typescript-sdk@0.9.5':
     dependencies:
       '@noble/curves': 1.9.7
       bs58: 6.0.0
